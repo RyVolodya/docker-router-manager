@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/images/drm-logo.svg" alt="Docker Router Manager logo" width="110">
+<img src="docs/images/drm-logo.png" alt="Docker Router Manager logo" width="110">
 
 # Docker Router Manager
 
