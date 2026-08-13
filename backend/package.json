@@ -1,0 +1,23 @@
+{
+  "name": "docker-router-manager-backend",
+  "version": "0.8.5",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "@node-rs/argon2": "^2.0.2",
+    "express-rate-limit": "^8.0.1",
+    "helmet": "^8.1.0",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.3",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0",
+    "@types/qrcode": "^1.5.5"
+  }
+}

@@ -1,0 +1,33 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: drm-backend
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - drm-data:/data
+    environment:
+      PORT: "8081"
+      DOCKER_SOCKET: /var/run/docker.sock
+      DRM_DATA_DIR: /data
+      COOKIE_SECURE: "false"
+      SESSION_TTL_MS: "28800000"
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: drm-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  drm-data:
