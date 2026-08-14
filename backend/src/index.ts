@@ -3,9 +3,9 @@ import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
 import { authenticate, adminResetPassword, changeOwnPassword, createUser, deleteUser, destroySession, getSession, initializeAuth, listUsers, secureCompare, updateUserRole } from "./authService.js";
 import { getContainerNetworkStats, getDockerInfo, getTopology, listContainers, listNetworks } from "./dockerService.js";
-import { addManagedRoute, deleteManagedRoute, getRoutingStatus, restoreManagedRoutes, setIpForward } from "./routingService.js";
-import { addWireGuardPeer, createWireGuardInterface, deleteWireGuardInterface, deleteWireGuardPeer, getClientConfig, getClientConfigQrSvg, getWireGuardStatus, restoreWireGuard } from "./wireguardService.js";
-import { addFirewallRule, addPublishedPortRule, applyFirewall, deleteFirewallRule, deletePublishedPortRule, disableFirewall, getFirewallStatus, rollbackFirewall } from "./firewallService.js";
+import { addManagedRoute, deleteManagedRoute, getRoutingStatus, restoreManagedRoutes, setIpForward, setIpForward6, updateManagedRoute } from "./routingService.js";
+import { addWireGuardPeer, createWireGuardInterface, deleteWireGuardInterface, deleteWireGuardPeer, getClientConfig, getClientConfigQrSvg, getWireGuardStatus, restoreWireGuard, setWireGuardAccessPolicy, configureWireGuardIpv6 } from "./wireguardService.js";
+import { addFirewallRule, addHostInputRule, addPublishedPortRule, applyFirewall, deleteFirewallRule, deleteHostInputRule, deletePublishedPortRule, disableFirewall, getFirewallStatus, rollbackFirewall } from "./firewallService.js";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8080);
@@ -15,7 +15,7 @@ app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(express.json({ limit: "64kb" }));
 
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", service: "docker-router-manager", version: "0.8.5" });
+  res.json({ status: "ok", service: "docker-router-manager", version: "0.9.3" });
 });
 
 
@@ -293,15 +293,23 @@ app.get("/api/stats/network", async (_req, res) => {
 
 
 
+
+app.post("/api/firewall/host-input-rules", async (req,res)=>{try{res.status(201).json(await addHostInputRule(req.body))}catch(e){res.status(400).json({message:e instanceof Error?e.message:String(e)})}});
+app.delete("/api/firewall/host-input-rules/:id", async (req,res)=>{try{await deleteHostInputRule(paramString(req.params.id));res.status(204).end()}catch(e){res.status(404).json({message:e instanceof Error?e.message:String(e)})}});
+
 app.get('/api/routing/status', async (_req,res)=>{try{res.json(await getRoutingStatus())}catch(e){res.status(500).json({message:e instanceof Error?e.message:String(e)})}});
 app.post('/api/routing/ip-forward', async (req,res)=>{try{res.json(await setIpForward(Boolean(req.body.enabled)))}catch(e){res.status(500).json({message:e instanceof Error?e.message:String(e)})}});
+app.post('/api/routing/ip-forward6', async (req,res)=>{try{res.json(await setIpForward6(Boolean(req.body.enabled)))}catch(e){res.status(500).json({message:e instanceof Error?e.message:String(e)})}});
 app.post('/api/routing/routes', async (req,res)=>{try{res.status(201).json(await addManagedRoute(req.body))}catch(e){res.status(400).json({message:e instanceof Error?e.message:String(e)})}});
+app.put('/api/routing/routes/:id', async (req,res)=>{try{res.json(await updateManagedRoute(paramString(req.params.id),req.body))}catch(e){res.status(400).json({message:e instanceof Error?e.message:String(e)})}});
 app.delete('/api/routing/routes/:id', async (req,res)=>{try{await deleteManagedRoute(paramString(req.params.id));res.status(204).end()}catch(e){res.status(404).json({message:e instanceof Error?e.message:String(e)})}});
 
 app.get('/api/wireguard/status', async (_req,res)=>{try{res.json(await getWireGuardStatus())}catch(e){res.status(500).json({message:e instanceof Error?e.message:String(e)})}});
 app.post('/api/wireguard/interfaces', async (req,res)=>{try{res.status(201).json(await createWireGuardInterface(req.body))}catch(e){res.status(400).json({message:e instanceof Error?e.message:String(e)})}});
 app.delete('/api/wireguard/interfaces/:name', async (req,res)=>{try{await deleteWireGuardInterface(paramString(req.params.name));res.status(204).end()}catch(e){res.status(404).json({message:e instanceof Error?e.message:String(e)})}});
 app.post('/api/wireguard/interfaces/:name/peers', async (req,res)=>{try{res.status(201).json(await addWireGuardPeer(paramString(req.params.name),req.body))}catch(e){res.status(400).json({message:e instanceof Error?e.message:String(e)})}});
+app.put('/api/wireguard/interfaces/:name/access', async (req,res)=>{try{res.json(await setWireGuardAccessPolicy(paramString(req.params.name),req.body))}catch(e){res.status(400).json({message:e instanceof Error?e.message:String(e)})}});
+app.put('/api/wireguard/interfaces/:name/ipv6', async (req,res)=>{try{res.json(await configureWireGuardIpv6(paramString(req.params.name),req.body))}catch(e){res.status(400).json({message:e instanceof Error?e.message:String(e)})}});
 app.delete('/api/wireguard/interfaces/:name/peers/:id', async (req,res)=>{try{await deleteWireGuardPeer(paramString(req.params.name),paramString(req.params.id));res.status(204).end()}catch(e){res.status(404).json({message:e instanceof Error?e.message:String(e)})}});
 app.get('/api/wireguard/interfaces/:name/peers/:id/config', async (req,res)=>{try{res.type('text/plain').send(await getClientConfig(paramString(req.params.name),paramString(req.params.id)))}catch(e){res.status(400).json({message:e instanceof Error?e.message:String(e)})}});
 app.get('/api/wireguard/interfaces/:name/peers/:id/qr', async (req,res)=>{try{res.type('image/svg+xml').send(await getClientConfigQrSvg(paramString(req.params.name),paramString(req.params.id)))}catch(e){res.status(400).json({message:e instanceof Error?e.message:String(e)})}});

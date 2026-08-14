@@ -1,6 +1,6 @@
 {
   "name": "docker-router-manager-backend",
-  "version": "0.8.5",
+  "version": "0.9.3-fixed",
   "private": true,
   "type": "module",
   "scripts": {

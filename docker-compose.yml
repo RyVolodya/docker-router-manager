@@ -10,10 +10,12 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - drm-data:/data
+      - /proc/sys:/host/proc/sys
     environment:
       PORT: "8081"
       DOCKER_SOCKET: /var/run/docker.sock
       DRM_DATA_DIR: /data
+      HOST_PROC_SYS: /host/proc/sys
       COOKIE_SECURE: "false"
       SESSION_TTL_MS: "28800000"
 

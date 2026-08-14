@@ -6,9 +6,9 @@
 
 ### Docker networking, routing, firewall and WireGuard management from one web interface
 
-**Version 0.8.5**
+**Version 0.9.3**
 
-![Version](https://img.shields.io/badge/version-0.8.5-2f80ff)
+![Version](https://img.shields.io/badge/version-0.9.3-2f80ff)
 ![Docker](https://img.shields.io/badge/Docker-supported-2496ED?logo=docker&logoColor=white)
 ![Linux](https://img.shields.io/badge/Linux-host-FCC624?logo=linux&logoColor=black)
 ![WireGuard](https://img.shields.io/badge/WireGuard-supported-88171A?logo=wireguard&logoColor=white)
@@ -33,8 +33,8 @@ DRM is designed for environments where Docker is more than an application runtim
 - **Interactive topology** — Docker networks, containers, published ports and external paths in one diagram.
 - **Firewall Engine** — host-level Docker traffic policy using `iptables` and the `DOCKER-USER` path.
 - **Published-port filtering** — control access to exposed Docker services by source CIDR.
-- **Routing Engine** — view the Linux routing table, manage static routes and IPv4 forwarding.
-- **Native WireGuard management** — interfaces, peers, routes, DNS, client configuration and QR codes.
+- **Dual-stack Routing Engine** — view IPv4/IPv6 routing tables, manage static routes and IPv4/IPv6 forwarding.
+- **Native dual-stack WireGuard management** — IPv4/IPv6 interfaces, peers, access policies, routes, DNS, client configuration and QR codes.
 - **Authentication and RBAC** — Administrator, Operator and Viewer roles.
 - **Dark and light themes** — dark mode is enabled by default.
 - **Docker-native deployment** — frontend and backend run as containers while the backend manages the host network namespace.
@@ -89,10 +89,12 @@ DRM exposes the Linux host routing table and provides controls for host forwardi
 Features include:
 
 - IPv4 forwarding ON/OFF
-- current Linux routing table
+- IPv6 forwarding ON/OFF
+- current IPv4 and IPv6 Linux routing tables
 - connected Docker routes
 - WireGuard routes
-- static destination routes
+- IPv4 and IPv6 static destination routes
+- create, edit and delete DRM-managed static routes
 - gateway selection
 - outgoing interface
 - route metric
@@ -101,9 +103,10 @@ Features include:
 Example:
 
 ```text
-Destination: 10.50.0.0/16
-Gateway:     192.168.150.1
-Interface:   ens18
+Family:      IPv6
+Destination: 2001:db8:100::/64
+Gateway:     fd42:8::2
+Interface:   wg0
 Metric:      100
 ```
 
@@ -121,9 +124,10 @@ DRM can:
 
 - create WireGuard interfaces
 - generate private/public keys
-- configure interface address and listen port
+- configure IPv4/IPv6 interface addresses and listen port
+- enable IPv6 with automatically suggested gateway/client addresses
 - add and remove peers
-- configure peer tunnel addresses
+- configure IPv4 and IPv6 peer tunnel addresses
 - separate endpoint address and endpoint port
 - configure server-side `AllowedIPs`
 - configure client routes
@@ -133,24 +137,46 @@ DRM can:
 - download WireGuard configuration files
 - generate QR codes for mobile WireGuard clients
 
-Client-route presets include Docker networks and full-tunnel operation.
+Client-route presets include Docker networks and dual-stack full-tunnel operation. Routing & Access Policy can allow WireGuard clients to selected IPv4 and IPv6 Docker networks, LAN/custom CIDRs and the Internet. IPv4 Internet access can use MASQUERADE; IPv6 Internet access supports routed IPv6 or optional NAT66.
 
 ### Example generated client configuration
 
 ```ini
 [Interface]
 PrivateKey = <client-private-key>
-Address = 10.8.0.2/32
-DNS = 1.1.1.1, 8.8.8.8
+Address = 10.8.0.2/32, fd42:8::2/128
+DNS = 1.1.1.1, 2606:4700:4700::1111
 
 [Peer]
 PublicKey = <server-public-key>
 Endpoint = vpn.example.com:51820
-AllowedIPs = 172.20.0.0/16, 192.168.150.0/24
+AllowedIPs = 172.20.0.0/16, fd20:20::/64, 192.168.150.0/24
 PersistentKeepalive = 25
 ```
 
 Private keys and generated client configurations must be treated as sensitive data.
+
+---
+
+## Dual-stack Docker & WireGuard networking
+
+Version 0.9.3 extends DRM to IPv6 across Docker visibility, routing and WireGuard access policies.
+
+- Container views can display both IPv4 and IPv6 addresses when the Docker network is dual-stack.
+- Docker network subnets and gateways are discovered for both address families.
+- WireGuard interfaces can operate IPv4-only or dual-stack.
+- Enabling IPv6 can automatically suggest a ULA gateway such as `fd42:8::1/64` and peer addresses such as `fd42:8::2/128`.
+- WireGuard → Docker access policies are generated for selected IPv4 and IPv6 Docker subnets.
+- DRM manages separate IPv6 firewall paths (`DRM-WG6-RAW`, `DRM-WG6-FORWARD`, and optional `DRM-WG6-NAT`).
+- IPv6 forwarding state is exposed in Routing and can be enabled by DRM.
+
+For a dual-stack full-tunnel client, the generated route set can include:
+
+```ini
+AllowedIPs = 0.0.0.0/0, ::/0
+```
+
+For direct access to a dual-stack Docker network, NAT is not required between the WireGuard and Docker IPv6 prefixes; normal routed IPv6 is used. NAT66 remains optional for IPv6 Internet access when a ULA WireGuard prefix does not have an upstream route.
 
 ---
 
@@ -322,21 +348,45 @@ docker-router-manager/
 
 ---
 
-## Version 0.8.5
+## Version 0.9.3
 
-Current v0.8.5 functionality includes:
+### Changes since v0.8.5
 
-**Docker:** network/container discovery, published ports, live traffic and topology.
+**Firewall & host INPUT**
 
-**Firewall:** Docker forwarding policies, published-port access control, Apply/Rollback and existing-connection termination.
+- Added host `INPUT` firewall management in addition to Docker published-port rules.
+- Host interfaces and listening TCP/UDP ports can be discovered and selected from the GUI.
+- Added source CIDR, protocol, port and `ACCEPT` / `DROP` / `REJECT` policies for host services.
 
-**Routing:** IPv4 forwarding, live route table and persistent DRM-managed static routes.
+**WireGuard routing & Docker access**
 
-**WireGuard:** native interfaces, peer management, endpoint host/port, DNS, client routes, downloadable configurations and QR generation.
+- Added per-interface **Routing & Access Policy**.
+- WireGuard networks can be granted access to selected Docker networks and custom LAN CIDRs.
+- Added IPv4 Internet forwarding with optional MASQUERADE.
+- Added a managed raw-table exception before Docker direct-container-address DROP rules, allowing explicitly selected WireGuard → Docker network traffic.
+- Added peer runtime information, endpoint visibility and interface deletion support.
 
-**Management:** authentication, forced initial password change, RBAC and user administration.
+**WireGuard IPv6 / dual stack**
 
-**UI:** responsive interface, mobile navigation, dark/light themes and DRM Route Node branding.
+- Added IPv6 support for WireGuard interfaces and peers.
+- Added **Enable IPv6** workflow with automatic gateway and peer-address suggestions.
+- Added IPv6 `AllowedIPs`, client routes and DNS support.
+- Added IPv6 Internet forwarding and optional NAT66.
+- Added IPv6 WireGuard → Docker IPv6 network access using dedicated managed chains.
+- DRM now exposes and manages host IPv6 forwarding state.
+
+**Containers & Routing**
+
+- Container network information can display IPv6 addresses alongside IPv4.
+- Routing now displays both IPv4 and IPv6 routes.
+- Added IPv6 static route creation.
+- Added editing and deletion of DRM-managed static routes.
+- Added support for IPv6 destinations, gateways, interfaces, metrics and `::/0`.
+
+**Compatibility**
+
+- Existing v0.9.x state remains compatible; new dual-stack fields use defaults when absent.
+- Kernel/Docker/WireGuard connected routes remain read-only; only DRM-managed static routes are editable.
 
 ---
 
@@ -376,7 +426,7 @@ See the `LICENSE` file for the complete license text.
 
 <div align="center">
 
-**Docker Router Manager · v0.8.5**
+**Docker Router Manager · v0.9.3**
 
 *Docker networking with routing, firewall and VPN management in one interface.*
 

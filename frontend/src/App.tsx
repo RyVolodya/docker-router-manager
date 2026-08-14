@@ -4,7 +4,7 @@ import {
   RefreshCw, Route, Search, Server, Shield, Wifi, CircleDot, Plug, Trash2, KeyRound, Waypoints, Plus, UserCog, LogOut, Moon, Sun, Download, QrCode
 } from "lucide-react";
 import { Background, Controls, Edge, MarkerType, MiniMap, Node, ReactFlow, useNodesState } from "@xyflow/react";
-import { addManagementUser, changeManagementRole, changePassword, createFirewallRule, createPublishedPortRule, firewallAction, getFirewallStatus, getMe, getNetworkStats, getTopology, listManagementUsers, login, logout, removeFirewallRule, removeManagementUser, removePublishedPortRule, resetManagementPassword, createRoute, createWgInterface, createWgPeer, getRoutingStatus, getWgClientConfig, getWgClientQr, getWireGuard, removeRoute, removeWgInterface, removeWgPeer, setRoutingForward } from "./api";
+import { addManagementUser, changeManagementRole, changePassword, createFirewallRule, createHostInputRule, createPublishedPortRule, firewallAction, getFirewallStatus, getMe, getNetworkStats, getTopology, listManagementUsers, login, logout, removeFirewallRule, removeHostInputRule, removeManagementUser, removePublishedPortRule, resetManagementPassword, createRoute, createWgInterface, createWgPeer, getRoutingStatus, getWgClientConfig, getWgClientQr, getWireGuard, removeRoute, updateRoute, removeWgInterface, removeWgPeer, setRoutingForward, setRoutingForward6, setWgAccessPolicy, setWgIpv6 } from "./api";
 import type { DockerContainer, DockerNetwork, FirewallStatus, NetworkStatsResponse, RoutingStatus, Topology, WireGuardStatus } from "./types";
 
 type Page = "dashboard" | "networks" | "containers" | "ports" | "topology" | "firewall" | "routing" | "wireguard" | "management";
@@ -135,7 +135,7 @@ function MainApp({auth,onAuthChange,onLogout,theme,onToggleTheme}:{auth:AuthUser
             <span className="theme-toggle-text">{theme==="dark"?"Light theme":"Dark theme"}</span>
           </button>
           <div className="sidebar-user"><strong>{auth.username}</strong><span>{auth.role}</span><button onClick={onLogout} title="Logout"><LogOut size={14}/></button></div>
-          <div className="version">DRM v0.8.5</div>
+          <div className="version">DRM v0.9.3</div>
         </div>
       </aside>
 
@@ -259,6 +259,12 @@ function AuthenticatedApp(){
   return <MainApp auth={auth} onAuthChange={setAuth} onLogout={signOut} theme={theme} onToggleTheme={toggleTheme}/>;
 }
 
+function containerAddressSummary(c:DockerContainer){
+  const values=c.networks.flatMap(n=>[n.ipv4Address,n.ipv6Address]).filter((x):x is string=>Boolean(x));
+  return values.join(" · ") || "No IP";
+}
+function networkEndpointAddress(ipv4?:string|null,ipv6?:string|null){return [ipv4,ipv6].filter(Boolean).join(" · ")||"—";}
+
 function Dashboard({ data, trafficRates }: { data: Topology | null; trafficRates: Record<string,{rxRate:number;txRate:number;rxBytes:number;txBytes:number}> }) {
   const endpoints = data?.networks.reduce((n,x) => n+x.containers.length,0) ?? 0;
   const published = data?.containers.reduce((n,c) =>
@@ -288,7 +294,7 @@ function Dashboard({ data, trafficRates }: { data: Topology | null; trafficRates
             <div className="container-icon"><Container size={17}/></div>
             <div className="grow"><strong>{c.name}</strong><span>{portSummary(c)}</span></div>
             <div className="right-meta"><span className={c.state==="running"?"pill green":"pill"}>{c.state}</span>
-            <code>{c.networks[0]?.ipv4Address || "—"}</code></div>
+            <code className="dual-ip-code">{networkEndpointAddress(c.networks[0]?.ipv4Address,c.networks[0]?.ipv6Address)}</code></div>
           </div>)}
         {!data?.containers.length && <Empty text="No container data yet"/>}</div>
       </div>
@@ -296,7 +302,7 @@ function Dashboard({ data, trafficRates }: { data: Topology | null; trafficRates
     <section className="panel live-traffic-panel">
       <PanelTitle title="Live container traffic" subtitle="Docker network I/O, refreshed every 2 seconds"/>
       <div className="traffic-table-head"><span>Container</span><span>RX / sec</span><span>TX / sec</span><span>Total RX</span><span>Total TX</span></div>
-      {[...(data?.containers ?? [])].sort((a,b)=>a.name.localeCompare(b.name)||a.id.localeCompare(b.id)).map(c=>{ const t=trafficRates[c.id]; return <div className="traffic-table-row" key={c.id}><div className="name-cell"><div className="container-icon"><Activity size={15}/></div><div><strong>{c.name}</strong><span>{c.networks.map(n=>n.ipv4Address).filter(Boolean).join(" · ") || "No IPv4"}</span></div></div><strong className="traffic-rx">{formatRate(t?.rxRate ?? 0)}</strong><strong className="traffic-tx">{formatRate(t?.txRate ?? 0)}</strong><span>{formatBytes(t?.rxBytes ?? 0)}</span><span>{formatBytes(t?.txBytes ?? 0)}</span></div>; })}
+      {[...(data?.containers ?? [])].sort((a,b)=>a.name.localeCompare(b.name)||a.id.localeCompare(b.id)).map(c=>{ const t=trafficRates[c.id]; return <div className="traffic-table-row" key={c.id}><div className="name-cell"><div className="container-icon"><Activity size={15}/></div><div><strong>{c.name}</strong><span>{containerAddressSummary(c)}</span></div></div><strong className="traffic-rx">{formatRate(t?.rxRate ?? 0)}</strong><strong className="traffic-tx">{formatRate(t?.txRate ?? 0)}</strong><span>{formatBytes(t?.rxBytes ?? 0)}</span><span>{formatBytes(t?.txBytes ?? 0)}</span></div>; })}
       {!data?.containers.length && <Empty text="No container traffic data"/>}
     </section>
   </>;
@@ -309,14 +315,14 @@ function Networks({networks}:{networks:DockerNetwork[]}) {
         <div className="grow"><strong>{network.name}</strong><span>{network.id.slice(0,12)}</span></div>
         <span className="pill blue">{network.driver}</span></div>
       <div className="network-details">
-        <Metric label="Subnet" value={network.subnets[0]?.subnet || "—"}/>
-        <Metric label="Gateway" value={network.subnets[0]?.gateway || "—"}/>
+        <Metric label="Subnets" value={network.subnets.map(x=>x.subnet).filter(Boolean).join(" · ") || "—"}/>
+        <Metric label="Gateways" value={network.subnets.map(x=>x.gateway).filter(Boolean).join(" · ") || "—"}/>
         <Metric label="Containers" value={String(network.containers.length)}/>
         <Metric label="Scope" value={network.scope}/>
       </div>
       <div className="endpoint-block"><span className="section-label">ATTACHED ENDPOINTS</span>
         {network.containers.length ? network.containers.map(e=>
-          <div className="endpoint" key={e.id}><span className="status-dot"/><strong>{e.name}</strong><code>{e.ipv4Address || "—"}</code></div>)
+          <div className="endpoint" key={e.id}><span className="status-dot"/><strong>{e.name}</strong><code>{networkEndpointAddress(e.ipv4Address,e.ipv6Address)}</code></div>)
         : <span className="muted">No attached containers</span>}
       </div>
     </article>)}
@@ -326,13 +332,14 @@ function Networks({networks}:{networks:DockerNetwork[]}) {
 
 function Containers({containers}:{containers:DockerContainer[]}) {
   return <div className="table-panel">
-    <div className="table-head ports-aware"><span>Container</span><span>Image</span><span>Network</span><span>IPv4</span><span>Ports</span><span>Status</span></div>
-    {containers.map(c=><div className="table-row ports-aware" key={c.id}>
+    <div className="table-head ports-aware dual-stack-containers"><span>Container</span><span>Image</span><span>Network</span><span>IPv4</span><span>IPv6</span><span>Ports</span><span>Status</span></div>
+    {containers.map(c=><div className="table-row ports-aware dual-stack-containers" key={c.id}>
       <div className="name-cell"><div className="container-icon"><Container size={16}/></div>
         <div><strong>{c.name}</strong><span>{c.id.slice(0,12)}</span></div></div>
       <span className="truncate">{c.image}</span>
       <span>{c.networks[0]?.networkName || "—"}</span>
       <code>{c.networks[0]?.ipv4Address || "—"}</code>
+      <code className="ipv6-value">{c.networks[0]?.ipv6Address || "—"}</code>
       <div className="port-mini">{c.ports.length ? c.ports.slice(0,3).map(p=><span key={p.containerPort}>{p.containerPort}</span>) : <span>—</span>}</div>
       <span><span className={c.state==="running"?"pill green":"pill"}>{c.state}</span></span>
     </div>)}
@@ -368,7 +375,7 @@ function Ports({containers,firewall}:{containers:DockerContainer[];firewall:Fire
           <div><strong>{c.name}</strong><span>{c.image}</span></div>
         </div>
 
-        <code>{c.networks[0]?.ipv4Address || "—"}</code>
+        <code className="dual-ip-code">{networkEndpointAddress(c.networks[0]?.ipv4Address,c.networks[0]?.ipv6Address)}</code>
 
         <code className={portClass}>{p.containerPort}</code>
 
@@ -402,6 +409,14 @@ function FirewallEngine() {
   const [publishedSource,setPublishedSource]=useState("0.0.0.0/0");
   const [publishedAction,setPublishedAction]=useState<"DROP"|"REJECT"|"ACCEPT">("DROP");
   const [publishedDescription,setPublishedDescription]=useState("");
+  const [hostPortKey,setHostPortKey]=useState("");
+  const [hostInterface,setHostInterface]=useState("*");
+  const [hostSource,setHostSource]=useState("0.0.0.0/0");
+  const [hostProtocol,setHostProtocol]=useState<"all"|"tcp"|"udp"|"icmp">("tcp");
+  const [hostPort,setHostPort]=useState("");
+  const [hostAction,setHostAction]=useState<"ACCEPT"|"DROP"|"REJECT">("DROP");
+  const [hostDescription,setHostDescription]=useState("");
+
 
   async function load() {
     try { setStatus(await getFirewallStatus()); setMessage(""); }
@@ -466,11 +481,12 @@ function FirewallEngine() {
   }
 
   async function removePublished(id:string){
-    setBusy(true);
-    try{await removePublishedPortRule(id);await load();}
-    catch(e){setMessage(e instanceof Error?e.message:String(e));}
-    finally{setBusy(false);}
+    setBusy(true);try{await removePublishedPortRule(id);await load();}catch(e){setMessage(e instanceof Error?e.message:String(e));}finally{setBusy(false);}
   }
+  const selectedHostPort=(status?.hostPortRefs??[]).find(x=>`${x.protocol}|${x.listenAddress}|${x.port}`===hostPortKey);
+  function chooseHostPort(key:string){setHostPortKey(key);const r=(status?.hostPortRefs??[]).find(x=>`${x.protocol}|${x.listenAddress}|${x.port}`===key);if(r){setHostProtocol(r.protocol);setHostPort(String(r.port));}}
+  async function addHostRule(){setBusy(true);try{await createHostInputRule({interfaceName:hostInterface,localAddress:selectedHostPort&&!["0.0.0.0","*","::"].includes(selectedHostPort.listenAddress)?selectedHostPort.listenAddress:null,protocol:hostProtocol,destinationPort:["tcp","udp"].includes(hostProtocol)&&hostPort?Number(hostPort):null,sourceCidr:hostSource,action:hostAction,description:hostDescription});setHostDescription("");await load();}catch(e){setMessage(e instanceof Error?e.message:String(e));}finally{setBusy(false);}}
+  async function removeHostRule(id:string){setBusy(true);try{await removeHostInputRule(id);await load();}catch(e){setMessage(e instanceof Error?e.message:String(e));}finally{setBusy(false);}}
 
   return <div className="firewall-stack">
     <div className="panel firewall-global">
@@ -513,6 +529,21 @@ function FirewallEngine() {
     </div>
 
     {message && <div className="error-banner"><Shield size={18}/><div><strong>Firewall error</strong><span>{message}</span></div></div>}
+
+    <div className="panel">
+      <div className="firewall-titlebar"><PanelTitle title="Host / INPUT" subtitle="Control services listening on the Docker host, including WAN-facing ports"/></div>
+      <div className="host-input-builder">
+        <label><span>Detected host port</span><select value={hostPortKey} onChange={e=>chooseHostPort(e.target.value)}><option value="">Custom / select listening port</option>{(status?.hostPortRefs??[]).map((x,i)=><option key={`${x.protocol}-${x.listenAddress}-${x.port}-${i}`} value={`${x.protocol}|${x.listenAddress}|${x.port}`}>{x.listenAddress}:{x.port}/{x.protocol}</option>)}</select></label>
+        <label><span>Interface</span><select value={hostInterface} onChange={e=>setHostInterface(e.target.value)}><option value="*">Any interface</option>{(status?.hostInterfaces??[]).map(x=><option key={x.name} value={x.name}>{x.name}{x.name===status?.defaultWanInterface?" · WAN":""}</option>)}</select></label>
+        <label><span>Source CIDR</span><input value={hostSource} onChange={e=>setHostSource(e.target.value)}/></label>
+        <label><span>Protocol</span><select value={hostProtocol} onChange={e=>setHostProtocol(e.target.value as any)}><option value="tcp">TCP</option><option value="udp">UDP</option><option value="icmp">ICMP</option><option value="all">ANY</option></select></label>
+        <label><span>Port</span><input disabled={!["tcp","udp"].includes(hostProtocol)} value={hostPort} onChange={e=>setHostPort(e.target.value.replace(/\D/g,""))}/></label>
+        <label><span>Action</span><select value={hostAction} onChange={e=>setHostAction(e.target.value as any)}><option value="ACCEPT">ACCEPT</option><option value="DROP">DROP</option><option value="REJECT">REJECT</option></select></label>
+        <label><span>Description</span><input value={hostDescription} onChange={e=>setHostDescription(e.target.value)} placeholder="Optional"/></label>
+        <button className="btn add-rule" disabled={busy} onClick={addHostRule}>Add rule</button>
+      </div>
+      <div className="host-input-list">{(status?.config.hostInputRules??[]).map(rule=><div className="host-input-row" key={rule.id}><div><strong>{rule.interfaceName==="*"?"ANY":rule.interfaceName}</strong><small>{rule.localAddress||"any host IP"}</small></div><code>{rule.protocol.toUpperCase()} {rule.destinationPort??"ANY"}</code><code>{rule.sourceCidr}</code><span className={rule.action==="ACCEPT"?"pill green":rule.action==="DROP"?"pill danger":"pill"}>{rule.action}</span><span className="truncate">{rule.description||"—"}</span><button className="icon-danger" onClick={()=>removeHostRule(rule.id)}><Trash2 size={15}/></button></div>)}{!status?.config.hostInputRules?.length&&<div className="muted published-empty">No host INPUT rules configured</div>}</div>
+    </div>
 
     <div className="panel">
       <div className="firewall-titlebar">
@@ -616,17 +647,53 @@ function FirewallEngine() {
 
 
 function RoutingPage(){
-  const [status,setStatus]=useState<RoutingStatus|null>(null);const [error,setError]=useState('');const [destination,setDestination]=useState('');const [gateway,setGateway]=useState('');const [dev,setDev]=useState('');const [metric,setMetric]=useState('100');
+  const [status,setStatus]=useState<RoutingStatus|null>(null);
+  const [error,setError]=useState('');
+  const [family,setFamily]=useState<4|6>(4);
+  const [destination,setDestination]=useState('');
+  const [gateway,setGateway]=useState('');
+  const [dev,setDev]=useState('');
+  const [metric,setMetric]=useState('100');
+  const [editingId,setEditingId]=useState<string|null>(null);
+
   async function load(){try{setStatus(await getRoutingStatus());setError('')}catch(e){setError(e instanceof Error?e.message:String(e))}}
   useEffect(()=>{load();const t=window.setInterval(load,5000);return()=>window.clearInterval(t)},[]);
-  async function add(){try{await createRoute({destination,gateway:gateway||null,dev:dev||null,metric:metric?Number(metric):null});setDestination('');setGateway('');await load()}catch(e){setError(e instanceof Error?e.message:String(e))}}
+  function clearForm(){setEditingId(null);setDestination('');setGateway('');setDev('');setMetric('100')}
+  function editRoute(r:any){setEditingId(r.id);setFamily(r.family);setDestination(r.destination);setGateway(r.gateway||'');setDev(r.dev||'');setMetric(r.metric==null?'':String(r.metric))}
+  async function save(){try{const body={family,destination,gateway:gateway||null,dev:dev||null,metric:metric?Number(metric):null};if(editingId)await updateRoute(editingId,body);else await createRoute(body);clearForm();await load()}catch(e){setError(e instanceof Error?e.message:String(e))}}
+
   return <div className="firewall-stack">
     {error&&<div className="error-banner"><Route size={18}/><div><strong>Routing error</strong><span>{error}</span></div></div>}
-    <div className="panel routing-status"><div><PanelTitle title="IPv4 forwarding" subtitle="Linux host forwarding between VPN, Docker, VLAN and LAN"/></div><button className={status?.ipForward?'engine-toggle on':'engine-toggle'} onClick={async()=>{await setRoutingForward(!status?.ipForward);await load()}}><span className="toggle-knob"/><span className="toggle-label">{status?.ipForward?'ON':'OFF'}</span></button></div>
-    <div className="panel"><PanelTitle title="Add static route" subtitle="ip route replace on the Docker host"/><div className="route-builder"><label><span>Destination</span><input value={destination} onChange={e=>setDestination(e.target.value)} placeholder="10.50.0.0/16"/></label><label><span>Gateway</span><input value={gateway} onChange={e=>setGateway(e.target.value)} placeholder="192.168.150.1"/></label><label><span>Interface</span><input value={dev} onChange={e=>setDev(e.target.value)} placeholder="wg0 / ens18"/></label><label><span>Metric</span><input value={metric} onChange={e=>setMetric(e.target.value.replace(/\D/g,''))}/></label><button className="btn primary" onClick={add}>Add route</button></div></div>
-    <div className="table-panel"><div className="route-table-head"><span>Destination</span><span>Gateway</span><span>Interface</span><span>Protocol</span><span>Metric</span></div>{(status?.routes??[]).map((r:any,i)=><div className="route-table-row" key={i}><code>{r.dst||'default'}</code><code>{r.gateway||'direct'}</code><span>{r.dev||'—'}</span><span>{r.protocol||r.type||'kernel'}</span><span>{r.metric??'—'}</span></div>)}</div>
-    <div className="panel"><PanelTitle title="DRM managed routes" subtitle="Persistent DRM routes re-applied when backend starts"/>{(status?.managedRoutes??[]).map(r=><div className="managed-route" key={r.id}><code>{r.destination}</code><span>via {r.gateway||'direct'} dev {r.dev||'auto'} metric {r.metric??'—'}</span><button className="icon-danger" onClick={async()=>{await removeRoute(r.id);await load()}}><Trash2 size={15}/></button></div>)}{!status?.managedRoutes.length&&<Empty text="No DRM managed routes"/>}</div>
+    <div className="routing-forward-grid">
+      <div className="panel routing-status"><div><PanelTitle title="IPv4 forwarding" subtitle="Host forwarding for IPv4 VPN, Docker, VLAN and LAN"/></div><button className={status?.ipForward?'engine-toggle on':'engine-toggle'} onClick={async()=>{await setRoutingForward(!status?.ipForward);await load()}}><span className="toggle-knob"/><span className="toggle-label">{status?.ipForward?'ON':'OFF'}</span></button></div>
+      <div className="panel routing-status"><div><PanelTitle title="IPv6 forwarding" subtitle="Host forwarding for WireGuard and Docker IPv6 networks"/></div><button className={status?.ipForward6?'engine-toggle on':'engine-toggle'} onClick={async()=>{await setRoutingForward6(!status?.ipForward6);await load()}}><span className="toggle-knob"/><span className="toggle-label">{status?.ipForward6?'ON':'OFF'}</span></button></div>
+    </div>
+    <div className="panel"><PanelTitle title={editingId?'Edit static route':'Add static route'} subtitle="Manage persistent IPv4 and IPv6 routes on the Docker host"/><div className="route-builder route-builder-dual">
+      <label><span>Family</span><select value={family} onChange={e=>{const f=Number(e.target.value) as 4|6;setFamily(f);setDestination('');setGateway('')}}><option value={4}>IPv4</option><option value={6}>IPv6</option></select></label>
+      <label><span>Destination</span><input value={destination} onChange={e=>setDestination(e.target.value)} placeholder={family===4?'10.50.0.0/16':'2001:db8:100::/64'}/></label>
+      <label><span>Gateway</span><input value={gateway} onChange={e=>setGateway(e.target.value)} placeholder={family===4?'192.168.150.1':'fd42:8::2'}/></label>
+      <label><span>Interface</span><input value={dev} onChange={e=>setDev(e.target.value)} placeholder="wg0 / eth0"/></label>
+      <label><span>Metric</span><input value={metric} onChange={e=>setMetric(e.target.value.replace(/\D/g,''))}/></label>
+      <button className="btn primary" onClick={save}>{editingId?'Save route':'Add route'}</button>{editingId&&<button className="btn secondary" onClick={clearForm}>Cancel</button>}
+    </div></div>
+    <div className="table-panel"><div className="route-table-head route-table-dual"><span>Family</span><span>Destination</span><span>Gateway</span><span>Interface</span><span>Protocol</span><span>Metric</span></div>{(status?.routes??[]).map((r:any,i)=><div className="route-table-row route-table-dual" key={`${r.family}-${i}`}><span className={r.family===6?'pill ipv6-pill':'pill blue'}>IPv{r.family}</span><code>{r.dst||'default'}</code><code>{r.gateway||'direct'}</code><span>{r.dev||'—'}</span><span>{r.protocol||r.type||'kernel'}</span><span>{r.metric??'—'}</span></div>)}</div>
+    <div className="panel"><PanelTitle title="DRM managed routes" subtitle="Only DRM-managed routes can be edited or deleted"/>{(status?.managedRoutes??[]).map(r=><div className="managed-route managed-route-dual" key={r.id}><span className={r.family===6?'pill ipv6-pill':'pill blue'}>IPv{r.family}</span><code>{r.destination}</code><span>via {r.gateway||'direct'} dev {r.dev||'auto'} metric {r.metric??'—'}</span><div className="managed-route-actions"><button className="btn secondary small" onClick={()=>editRoute(r)}>Edit</button><button className="icon-danger" onClick={async()=>{await removeRoute(r.id);await load()}}><Trash2 size={15}/></button></div></div>)}{!status?.managedRoutes.length&&<Empty text="No DRM managed routes"/>}</div>
   </div>
+}
+
+function autoWgIpv6Gateway(ipv4Cidr:string){
+  const ip=ipv4Cidr.split('/')[0];
+  const o=ip.split('.').map(Number);
+  if(o.length!==4 || o.some(x=>!Number.isInteger(x)||x<0||x>255)) return 'fd42:8::1/64';
+  const a=o[1].toString(16), b=o[2].toString(16);
+  return b==='0'?`fd42:${a}::1/64`:`fd42:${a}:${b}::1/64`;
+}
+function autoWgIpv6Client(gateway:string,peerIndex=0){
+  const base=gateway.split('/')[0];
+  const host=Math.max(2,peerIndex+2).toString(16);
+  if(base.endsWith('::1')) return `${base.slice(0,-1)}${host}/128`;
+  const pos=base.lastIndexOf(':');
+  return pos>=0?`${base.slice(0,pos+1)}${host}/128`:'fd42:8::2/128';
 }
 
 function WireGuardPage({topology}:{topology:Topology|null}){
@@ -634,10 +701,13 @@ function WireGuardPage({topology}:{topology:Topology|null}){
   const [error,setError]=useState('');
   const [name,setName]=useState('wg0');
   const [address,setAddress]=useState('10.8.0.1/24');
+  const [ipv6Enabled,setIpv6Enabled]=useState(false);
+  const [ipv6Address,setIpv6Address]=useState('');
   const [listenPort,setListenPort]=useState('51820');
   const [selected,setSelected]=useState('');
   const [peerName,setPeerName]=useState('Laptop');
   const [clientAddress,setClientAddress]=useState('10.8.0.2/32');
+  const [clientIpv6Address,setClientIpv6Address]=useState('');
   const [endpointHost,setEndpointHost]=useState(()=>window.location.hostname);
   const [endpointPort,setEndpointPort]=useState('');
   const [endpointHostTouched,setEndpointHostTouched]=useState(false);
@@ -649,20 +719,67 @@ function WireGuardPage({topology}:{topology:Topology|null}){
   const [config,setConfig]=useState('');
   const [configName,setConfigName]=useState('wireguard-client');
   const [qrSvg,setQrSvg]=useState('');
+  const [accessDockerCidrs,setAccessDockerCidrs]=useState<string[]>([]);
+  const [accessLanCidrs,setAccessLanCidrs]=useState('');
+  const [accessInternet,setAccessInternet]=useState(false);
+  const [accessNat,setAccessNat]=useState(true);
+  const [accessWan,setAccessWan]=useState('');
+  const [accessEnabled,setAccessEnabled]=useState(false);
+  const [accessInternet6,setAccessInternet6]=useState(false);
+  const [accessNat66,setAccessNat66]=useState(false);
+  const [accessWan6,setAccessWan6]=useState('');
+  const [selectedIpv6Gateway,setSelectedIpv6Gateway]=useState('');
 
-  async function load(){try{const x=await getWireGuard();setStatus(x);if(!selected&&x.interfaces?.[0])setSelected(x.interfaces[0].name);setError('')}catch(e){setError(e instanceof Error?e.message:String(e))}}
-  useEffect(()=>{load();const t=window.setInterval(load,5000);return()=>window.clearInterval(t)},[]);
+
+  async function load(){
+    try{
+      const x=await getWireGuard();
+      setStatus(x);
+      setSelected(prev=>{
+        if(prev && x.interfaces?.some((i:any)=>i.name===prev)) return prev;
+        const saved=localStorage.getItem("drm-wireguard-selected-interface") || "";
+        if(saved && x.interfaces?.some((i:any)=>i.name===saved)) return saved;
+        return x.interfaces?.[0]?.name || "";
+      });
+      setError('');
+    }catch(e){setError(e instanceof Error?e.message:String(e))}
+  }
+  useEffect(()=>{load();const t=window.setInterval(load,2000);return()=>window.clearInterval(t)},[]);
+  useEffect(()=>{if(selected)localStorage.setItem("drm-wireguard-selected-interface",selected)},[selected]);
   const dockerRoutes=(topology?.networks??[]).flatMap(n=>n.subnets.map(s=>s.subnet).filter(Boolean) as string[]);
+  useEffect(()=>{
+    if(ipv6Enabled) setIpv6Address(prev=>prev||autoWgIpv6Gateway(address));
+    else setIpv6Address('');
+  },[ipv6Enabled]);
+  useEffect(()=>{
+    if(ipv6Enabled) setIpv6Address(autoWgIpv6Gateway(address));
+  },[address]);
   const iface=status?.interfaces.find(i=>i.name===selected);
+  useEffect(()=>{if(!iface)return;const p=iface.accessPolicy;setAccessEnabled(Boolean(p?.enabled));setAccessDockerCidrs(p?.dockerCidrs??[]);setAccessLanCidrs((p?.lanCidrs??[]).join(', '));setAccessInternet(Boolean(p?.internet));setAccessNat(Boolean(p?.nat));setAccessWan(p?.wanInterface||status?.defaultWanInterface||'');setAccessInternet6(Boolean(p?.internet6));setAccessNat66(Boolean(p?.nat66));setAccessWan6(p?.wanInterface6||status?.defaultWanInterface6||status?.defaultWanInterface||'');},[selected,iface?.name]);
+  useEffect(()=>{if(iface)setSelectedIpv6Gateway(iface.ipv6Address||autoWgIpv6Gateway(iface.address||'10.8.0.1/24'));},[iface?.name,iface?.ipv6Address,iface?.address]);
+  useEffect(()=>{
+    if(!iface)return;
+    if(iface.ipv6Address){
+      const nextV6=autoWgIpv6Client(iface.ipv6Address,iface.peers.length);
+      setClientIpv6Address(nextV6);
+      const currentServer=serverAllowed.split(',').map(x=>x.trim()).filter(Boolean).filter(x=>!x.includes(':'));
+      setServerAllowed([...currentServer,nextV6].join(', '));
+      if(!clientAllowed.trim()) setClientAllowed('0.0.0.0/0, ::/0');
+    }else{
+      setClientIpv6Address('');
+      setServerAllowed(prev=>prev.split(',').map(x=>x.trim()).filter(x=>x&&!x.includes(':')).join(', '));
+    }
+  },[iface?.name,iface?.ipv6Address,iface?.peers.length]);
+
 
   useEffect(()=>{
     if(!endpointHostTouched) setEndpointHost(window.location.hostname);
     if(iface && !endpointPortTouched) setEndpointPort(String(iface.listenPort));
   },[iface?.name,iface?.listenPort,endpointHostTouched,endpointPortTouched]);
 
-  async function createIface(){try{await createWgInterface({name,address,listenPort:Number(listenPort),mtu:1420});await load()}catch(e){setError(e instanceof Error?e.message:String(e))}}
+  async function createIface(){try{await createWgInterface({name,address:address.trim()||undefined,ipv6Enabled,ipv6Address:ipv6Enabled?(ipv6Address.trim()||autoWgIpv6Gateway(address)):undefined,listenPort:Number(listenPort),mtu:1420});await load()}catch(e){setError(e instanceof Error?e.message:String(e))}}
   async function addPeer(){try{
-    await createWgPeer(selected,{name:peerName,clientAddress,endpointHost:endpointHost.trim(),endpointPort:Number(endpointPort),serverAllowedIps:serverAllowed.split(',').map(x=>x.trim()).filter(Boolean),clientAllowedIps:clientAllowed.split(',').map(x=>x.trim()).filter(Boolean),dns:dns.trim()||undefined,persistentKeepalive:Number(keepalive||0)});
+    await createWgPeer(selected,{name:peerName,clientAddress:clientAddress.trim()||undefined,clientIpv6Address:clientIpv6Address.trim()||undefined,endpointHost:endpointHost.trim(),endpointPort:Number(endpointPort),serverAllowedIps:serverAllowed.split(',').map(x=>x.trim()).filter(Boolean),clientAllowedIps:clientAllowed.split(',').map(x=>x.trim()).filter(Boolean),dns:dns.trim()||undefined,persistentKeepalive:Number(keepalive||0)});
     setQrSvg('');setConfig('');await load();
   }catch(e){setError(e instanceof Error?e.message:String(e))}}
 
@@ -680,24 +797,80 @@ function WireGuardPage({topology}:{topology:Topology|null}){
     catch(e){setError(e instanceof Error?e.message:String(e))}
   }
 
+  async function toggleSelectedIpv6(enabled:boolean){if(!iface)return;try{await setWgIpv6(iface.name,{enabled,ipv6Address:enabled?(selectedIpv6Gateway||autoWgIpv6Gateway(iface.address)):undefined});if(enabled){setAccessInternet6(accessInternet);if(accessInternet)setAccessNat66(true);setClientAllowed(prev=>prev.includes('0.0.0.0/0')&&!prev.includes('::/0')?`${prev}, ::/0`:prev)}await load();}catch(e){setError(e instanceof Error?e.message:String(e))}}
+
+  async function saveAccessPolicy(){if(!iface)return;try{await setWgAccessPolicy(iface.name,{enabled:accessEnabled,dockerCidrs:accessDockerCidrs,lanCidrs:accessLanCidrs.split(',').map(x=>x.trim()).filter(Boolean),internet:accessInternet,nat:accessInternet&&accessNat,wanInterface:accessWan||status?.defaultWanInterface||undefined,internet6:accessInternet6,nat66:accessInternet6&&accessNat66,wanInterface6:accessWan6||status?.defaultWanInterface6||status?.defaultWanInterface||undefined});await load();}catch(e){setError(e instanceof Error?e.message:String(e))}}
+
+  async function deleteInterface(ifaceName:string){
+    if(!window.confirm(`Delete WireGuard interface ${ifaceName}?\n\nAll DRM-managed peers for this interface will also be removed.`)) return;
+    try{
+      await removeWgInterface(ifaceName);
+      setConfig('');
+      setQrSvg('');
+      localStorage.removeItem("drm-wireguard-selected-interface");
+      setSelected('');
+      await load();
+    }catch(e){setError(e instanceof Error?e.message:String(e))}
+  }
+
   return <div className="firewall-stack">
     {error&&<div className="error-banner"><KeyRound size={18}/><div><strong>WireGuard error</strong><span>{error}</span></div></div>}
-    <div className="panel"><PanelTitle title="Create WireGuard interface" subtitle="Native Linux WireGuard in the host network namespace"/><div className="route-builder wg-interface-builder"><label><span>Name</span><input value={name} onChange={e=>setName(e.target.value)}/></label><label><span>Address</span><input value={address} onChange={e=>setAddress(e.target.value)}/></label><label><span>Listen port</span><input value={listenPort} onChange={e=>setListenPort(e.target.value.replace(/\D/g,''))}/></label><button className="btn primary" onClick={createIface}>Create interface</button></div></div>
-    <div className="wg-layout"><div className="panel"><PanelTitle title="Interfaces" subtitle="Configured by DRM"/>{(status?.interfaces??[]).map(i=><button className={selected===i.name?'wg-interface-card active':'wg-interface-card'} key={i.name} onClick={()=>{setSelected(i.name);setEndpointPortTouched(false)}}><div><strong>{i.name}</strong><span>{i.address} · UDP {i.listenPort}</span></div><code>{i.peers.length} peers</code></button>)}{!status?.interfaces.length&&<Empty text="No WireGuard interfaces"/>}</div>
+    <div className="panel"><PanelTitle title="Create WireGuard interface" subtitle="Native Linux WireGuard with optional automatic IPv6 dual-stack"/><div className="route-builder wg-interface-builder wg-interface-builder-dual"><label><span>Name</span><input value={name} onChange={e=>setName(e.target.value)}/></label><label><span>IPv4 gateway</span><input value={address} onChange={e=>setAddress(e.target.value)} placeholder="10.8.0.1/24"/></label><label className="wg-ipv6-toggle"><span>IPv6</span><div className="wg-ipv6-check"><input type="checkbox" checked={ipv6Enabled} onChange={e=>setIpv6Enabled(e.target.checked)}/><strong>Enable IPv6</strong></div></label>{ipv6Enabled&&<label><span>IPv6 gateway</span><input value={ipv6Address} onChange={e=>setIpv6Address(e.target.value)} placeholder="fd42:8::1/64"/><small className="field-hint">Generated automatically; you can edit it.</small></label>}<label><span>Listen port</span><input value={listenPort} onChange={e=>setListenPort(e.target.value.replace(/\D/g,''))}/></label><button className="btn primary" onClick={createIface}>Create interface</button></div></div>
+    <div className="wg-layout"><div className="panel"><PanelTitle title="Interfaces" subtitle="Configured by DRM"/>{(status?.interfaces??[]).map(i=>
+      <div className={selected===i.name?'wg-interface-card active':'wg-interface-card'} key={i.name}>
+        <button className="wg-interface-select" onClick={()=>{setSelected(i.name);setEndpointPortTouched(false);setConfig('');setQrSvg('')}}>
+          <div><strong>{i.name}</strong><span>{[i.address,i.ipv6Address].filter(Boolean).join(' · ')} · UDP {i.listenPort}</span></div><code>{i.peers.length} peers</code>
+        </button>
+        <button className="wg-interface-delete" title={`Delete ${i.name}`} onClick={()=>deleteInterface(i.name)}><Trash2 size={15}/></button>
+      </div>
+    )}{!status?.interfaces.length&&<Empty text="No WireGuard interfaces"/>}</div>
     <div className="panel"><PanelTitle title={iface?`${iface.name} peers`:'Peers'} subtitle={iface?`Public key: ${iface.publicKey}`:'Select an interface'}/>{iface&&<>
+      <div className="wg-existing-ipv6">
+        <label className="wg-network-check"><input type="checkbox" checked={Boolean(iface.ipv6Address)} onChange={e=>toggleSelectedIpv6(e.target.checked)}/><span><strong>IPv6</strong><small>{iface.ipv6Address?'Enabled for this WireGuard interface':'Enable automatic IPv6 addressing'}</small></span></label>
+        {iface.ipv6Address&&<label><span>IPv6 gateway</span><div className="wg-inline-save"><input value={selectedIpv6Gateway} onChange={e=>setSelectedIpv6Gateway(e.target.value)}/><button className="btn secondary" onClick={()=>toggleSelectedIpv6(true)}>Apply</button></div><small className="field-hint">Peers are assigned ::2/128, ::3/128, ... automatically.</small></label>}
+      </div>
       <div className="wg-peer-builder wg-peer-builder-v2">
         <label><span>Name</span><input value={peerName} onChange={e=>setPeerName(e.target.value)}/></label>
         <label><span>Client address</span><input value={clientAddress} onChange={e=>setClientAddress(e.target.value)}/></label>
+        {iface.ipv6Address&&<label><span>Client IPv6 address</span><input value={clientIpv6Address} onChange={e=>{setClientIpv6Address(e.target.value);const v4=serverAllowed.split(',').map(x=>x.trim()).filter(x=>x&&!x.includes(':'));setServerAllowed([...v4,e.target.value].filter(Boolean).join(', '))}} placeholder="fd42:8::2/128"/><small className="field-hint">Next address is generated automatically.</small></label>}
         <label><span>Endpoint address</span><input value={endpointHost} onChange={e=>{setEndpointHostTouched(true);setEndpointHost(e.target.value)}} placeholder="vpn.example.com"/></label>
         <label><span>Endpoint port</span><input value={endpointPort} onChange={e=>{setEndpointPortTouched(true);setEndpointPort(e.target.value.replace(/\D/g,''))}} placeholder={String(iface.listenPort)}/></label>
         <label><span>DNS</span><input value={dns} onChange={e=>setDns(e.target.value)} placeholder="1.1.1.1, 8.8.8.8"/></label>
-        <label><span>Server AllowedIPs</span><input value={serverAllowed} onChange={e=>setServerAllowed(e.target.value)}/></label>
-        <label><span>Client routes</span><input value={clientAllowed} onChange={e=>setClientAllowed(e.target.value)} placeholder="172.20.0.0/16, 192.168.150.0/24"/></label>
+        <label><span>Server AllowedIPs</span><input value={serverAllowed} onChange={e=>setServerAllowed(e.target.value)} placeholder="10.8.0.2/32, fd42:8::2/128"/></label>
+        <label><span>Client routes</span><input value={clientAllowed} onChange={e=>setClientAllowed(e.target.value)} placeholder="172.20.0.0/16, fd00:20::/64, 192.168.150.0/24"/></label>
         <label><span>Keepalive</span><input value={keepalive} onChange={e=>setKeepalive(e.target.value.replace(/\D/g,''))}/></label>
         <button className="btn primary" onClick={addPeer}>Add peer</button>
       </div>
-      <div className="wg-presets"><span>Client route presets:</span><button onClick={()=>setClientAllowed(dockerRoutes.join(', '))}>Docker networks</button><button onClick={()=>setClientAllowed('0.0.0.0/0')}>Full tunnel</button><button onClick={()=>setClientAllowed('')}>Clear</button></div>
-      {iface.peers.map(peer=><div className="wg-peer-row" key={peer.id}><div><strong>{peer.name}</strong><span>{peer.clientAddress||'—'} · {peer.endpointHost||peer.endpoint||'no endpoint'}{peer.endpointPort?`:${peer.endpointPort}`:''} · server AllowedIPs {peer.serverAllowedIps.join(', ')}</span>{peer.dns&&<small>DNS: {peer.dns}</small>}</div><div className="wg-peer-actions"><button className="btn secondary" onClick={()=>openConfig(peer)}>Client config</button><button className="btn secondary" onClick={()=>showQr(peer)}><QrCode size={14}/> QR</button><button className="icon-danger" onClick={async()=>{await removeWgPeer(iface.name,peer.id);await load()}}><Trash2 size={15}/></button></div></div>)}</>}</div></div>
+      <div className="wg-access-panel">
+        <div className="wg-access-head"><div><strong>Routing & Access Policy</strong><span>Allow this WireGuard network to selected Docker/LAN networks and optionally the Internet.</span></div><label className="wg-access-toggle"><input type="checkbox" checked={accessEnabled} onChange={e=>setAccessEnabled(e.target.checked)}/> Enabled</label></div>
+        <div className="wg-access-grid">
+          <div className="wg-access-section"><span className="section-label">DOCKER NETWORKS · IPv4 / IPv6</span>{(topology?.networks??[]).filter(n=>n.driver==="bridge").map(n=>{const cidrs=n.subnets.map(x=>x.subnet).filter((x):x is string=>Boolean(x));if(!cidrs.length)return null;const checked=cidrs.every(c=>accessDockerCidrs.includes(c));return <label className="wg-network-check" key={n.id}><input type="checkbox" checked={checked} onChange={e=>setAccessDockerCidrs(prev=>e.target.checked?[...new Set([...prev,...cidrs])]:prev.filter(c=>!cidrs.includes(c)))}/><span><strong>{n.name}</strong><small>{cidrs.map(c=>`${c.includes(':')?'IPv6':'IPv4'} ${c}`).join(" · ")}</small></span></label>})}</div>
+          <div className="wg-access-section"><label><span>LAN / custom CIDRs · IPv4 / IPv6</span><input value={accessLanCidrs} onChange={e=>setAccessLanCidrs(e.target.value)} placeholder="192.168.150.0/24, fd42:150::/64"/></label><span className="section-label">IPv4 INTERNET</span><label className="wg-network-check"><input type="checkbox" checked={accessInternet} onChange={e=>{setAccessInternet(e.target.checked);if(e.target.checked&&iface?.ipv6Address){setAccessInternet6(true);setAccessNat66(true)}}}/><span><strong>IPv4 Internet access</strong><small>Forward 0.0.0.0/0 traffic to WAN</small></span></label><label className="wg-network-check"><input type="checkbox" disabled={!accessInternet} checked={accessNat} onChange={e=>setAccessNat(e.target.checked)}/><span><strong>IPv4 NAT / MASQUERADE</strong><small>Usually required when upstream has no route to the VPN subnet</small></span></label><label><span>IPv4 WAN interface</span><select value={accessWan} onChange={e=>setAccessWan(e.target.value)}><option value="">Select WAN</option>{(status?.hostInterfaces??[]).map(x=><option key={x} value={x}>{x}{x===status?.defaultWanInterface?" · default IPv4":""}</option>)}</select></label><span className="section-label">IPv6 INTERNET {iface.ipv6Address?"· ENABLED":"· DISABLED"}</span><label className="wg-network-check"><input type="checkbox" disabled={!iface.ipv6Address} checked={Boolean(iface.ipv6Address)&&accessInternet6} onChange={e=>{setAccessInternet6(e.target.checked);if(e.target.checked)setAccessNat66(true)}}/><span><strong>IPv6 Internet access</strong><small>Forward ::/0 traffic to IPv6 WAN</small></span></label><label className="wg-network-check"><input type="checkbox" disabled={!accessInternet6} checked={accessNat66} onChange={e=>setAccessNat66(e.target.checked)}/><span><strong>NAT66 / MASQUERADE</strong><small>Optional. Prefer routed IPv6 when upstream routing is available.</small></span></label><label><span>IPv6 WAN interface</span><select value={accessWan6} onChange={e=>setAccessWan6(e.target.value)}><option value="">Select IPv6 WAN</option>{(status?.hostInterfaces??[]).map(x=><option key={x} value={x}>{x}{x===status?.defaultWanInterface6?" · default IPv6":""}</option>)}</select></label></div>
+        </div>
+        <div className="wg-access-footer"><span>Client AllowedIPs must include selected networks. Use <code>0.0.0.0/0</code> for IPv4 full tunnel and <code>::/0</code> for IPv6.</span><button className="btn primary" onClick={saveAccessPolicy}>Apply access policy</button></div>
+      </div>
+
+      <div className="wg-presets"><span>Client route presets:</span><button onClick={()=>setClientAllowed(dockerRoutes.join(', '))}>Docker networks</button><button onClick={()=>setClientAllowed('0.0.0.0/0')}>IPv4 full tunnel</button>{iface.ipv6Address&&<button onClick={()=>setClientAllowed('0.0.0.0/0, ::/0')}>Dual-stack full tunnel</button>}<button onClick={()=>setClientAllowed('')}>Clear</button></div>
+      {iface.peers.map(peer=>{
+        const rt=peer.runtime;
+        return <div className="wg-peer-row wg-peer-runtime-row" key={peer.id}>
+          <div className="wg-peer-main">
+            <div className="wg-peer-title">
+              <strong>{peer.name}</strong>
+              <span className={`wg-status ${rt.status}`}>{rt.status==="active"?"ACTIVE":rt.status==="idle"?"IDLE":"NEVER"}</span>
+            </div>
+            <span>{[peer.clientAddress,peer.clientIpv6Address].filter(Boolean).join(' · ')||'—'} · server AllowedIPs {peer.serverAllowedIps.join(', ')}</span>
+            {peer.dns&&<small>DNS: {peer.dns}</small>}
+            <div className="wg-runtime-grid">
+              <div><small>Remote endpoint</small><code>{rt.endpoint||"—"}</code></div>
+              <div><small>Remote IP</small><code>{rt.remoteIp||"—"}</code></div>
+              <div><small>Latest handshake</small><code>{formatHandshakeAge(rt.handshakeAgeSeconds,rt.status)}</code></div>
+              <div><small>Transfer</small><code>↓ {formatBytes(rt.rxBytes)} · ↑ {formatBytes(rt.txBytes)}</code></div>
+            </div>
+          </div>
+          <div className="wg-peer-actions"><button className="btn secondary" onClick={()=>openConfig(peer)}>Client config</button><button className="btn secondary" onClick={()=>showQr(peer)}><QrCode size={14}/> QR</button><button className="icon-danger" onClick={async()=>{await removeWgPeer(iface.name,peer.id);await load()}}><Trash2 size={15}/></button></div>
+        </div>
+      })}</>}</div></div>
     {config&&<div className="panel"><PanelTitle title="Generated client configuration" subtitle="Private key is sensitive; download and QR are available only to Operator/Administrator"/><pre className="wg-config">{config}</pre><div className="wg-config-actions"><button className="btn secondary" onClick={()=>navigator.clipboard.writeText(config)}>Copy config</button><button className="btn primary" onClick={downloadConfig}><Download size={14}/> Download .conf</button>{qrSvg&&<button className="btn secondary" onClick={()=>setQrSvg('')}>Hide QR</button>}</div>{qrSvg&&<div className="wg-qr"><div dangerouslySetInnerHTML={{__html:qrSvg}}/><span>Scan with the WireGuard mobile app</span></div>}</div>}
   </div>
 }
@@ -808,7 +981,7 @@ function buildFlow(data:Topology|null, firewall:FirewallStatus|null):{nodes:Node
       data:{label:<div className="flow-node">
         <div className="flow-node-icon container"><Container size={17}/></div>
         <div><strong>{container.name}</strong>
-          <span>{container.networks.map(n=>n.ipv4Address).filter(Boolean).join(" · ") || "No IPv4"}</span>
+          <span>{containerAddressSummary(container)}</span>
           <small>{portSummary(container)}</small>
         </div>
       </div>},
@@ -923,6 +1096,14 @@ function buildFlow(data:Topology|null, firewall:FirewallStatus|null):{nodes:Node
   });
 
   return{nodes,edges};
+}
+
+function formatHandshakeAge(seconds:number|null,status:"active"|"idle"|"never"){
+  if(status==="never" || seconds===null) return "Never";
+  if(seconds<60) return `${seconds}s ago`;
+  if(seconds<3600) return `${Math.floor(seconds/60)}m ${seconds%60}s ago`;
+  if(seconds<86400) return `${Math.floor(seconds/3600)}h ${Math.floor((seconds%3600)/60)}m ago`;
+  return `${Math.floor(seconds/86400)}d ago`;
 }
 
 function formatBytes(value:number){if(value<1024)return `${value.toFixed(0)} B`;if(value<1024*1024)return `${(value/1024).toFixed(1)} KB`;if(value<1024*1024*1024)return `${(value/(1024*1024)).toFixed(1)} MB`;return `${(value/(1024*1024*1024)).toFixed(2)} GB`;}

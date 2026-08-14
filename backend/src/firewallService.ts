@@ -7,6 +7,7 @@ import type {
   FirewallConfig,
   FirewallProtocol,
   FirewallRule,
+  HostInputFirewallRule,
   PublishedPortFirewallRule
 } from "./types.js";
 import { getTopology, listNetworks } from "./dockerService.js";
@@ -17,6 +18,7 @@ const configPath = `${dataDir}/firewall.json`;
 const backupPath = `${dataDir}/firewall.backup.json`;
 const appliedPath = `${dataDir}/firewall.applied.json`;
 const chain = "DRM-FIREWALL";
+const inputChain = "DRM-INPUT";
 const commentPrefix = "DRM:";
 
 async function iptables(args: string[]) {
@@ -76,6 +78,25 @@ async function chainExists() {
   }
 }
 
+async function inputChainExists() {
+  try { await iptables(["-n", "-L", inputChain]); return true; }
+  catch { return false; }
+}
+
+async function ensureInputChain() {
+  if (!(await inputChainExists())) await iptables(["-N", inputChain]);
+  try { await iptables(["-C", "INPUT", "-j", inputChain]); }
+  catch { await iptables(["-I", "INPUT", "1", "-j", inputChain]); }
+}
+
+async function removeInputJump() {
+  while (true) {
+    try { await iptables(["-D", "INPUT", "-j", inputChain]); }
+    catch { break; }
+  }
+}
+
+
 async function ensureChain() {
   if (!(await chainExists())) {
     await iptables(["-N", chain]);
@@ -106,13 +127,15 @@ export async function getFirewallConfig(): Promise<FirewallConfig> {
     return {
       ...parsed,
       rules: parsed.rules ?? [],
-      publishedPortRules: parsed.publishedPortRules ?? []
+      publishedPortRules: parsed.publishedPortRules ?? [],
+      hostInputRules: parsed.hostInputRules ?? []
     };
   } catch {
     return {
       enabled: false,
       rules: [],
       publishedPortRules: [],
+      hostInputRules: [],
       updatedAt: new Date().toISOString()
     };
   }
@@ -134,7 +157,8 @@ async function getBackup(): Promise<FirewallConfig | null> {
     return {
       ...parsed,
       rules: parsed.rules ?? [],
-      publishedPortRules: parsed.publishedPortRules ?? []
+      publishedPortRules: parsed.publishedPortRules ?? [],
+      hostInputRules: parsed.hostInputRules ?? []
     };
   } catch {
     return null;
@@ -152,13 +176,15 @@ async function getApplied(): Promise<FirewallConfig> {
     return {
       ...parsed,
       rules: parsed.rules ?? [],
-      publishedPortRules: parsed.publishedPortRules ?? []
+      publishedPortRules: parsed.publishedPortRules ?? [],
+      hostInputRules: parsed.hostInputRules ?? []
     };
   } catch {
     return {
       enabled: false,
       rules: [],
       publishedPortRules: [],
+      hostInputRules: [],
       updatedAt: new Date(0).toISOString()
     };
   }
@@ -295,6 +321,89 @@ export async function deletePublishedPortRule(id: string) {
   await saveConfig(config);
 }
 
+
+function validateHostInputRule(rule: Omit<HostInputFirewallRule, "id"> | HostInputFirewallRule) {
+  if (!rule.interfaceName) throw new Error("Interface is required");
+  if (!["all","tcp","udp","icmp"].includes(rule.protocol)) throw new Error("Unsupported protocol");
+  if (!["ACCEPT","DROP","REJECT"].includes(rule.action)) throw new Error("Unsupported action");
+  if (!rule.sourceCidr || !/^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/.test(rule.sourceCidr)) throw new Error("Source CIDR must be IPv4 CIDR");
+  if (rule.destinationPort != null) {
+    if (!["tcp","udp"].includes(rule.protocol)) throw new Error("Destination port requires TCP or UDP");
+    if (!Number.isInteger(rule.destinationPort) || rule.destinationPort < 1 || rule.destinationPort > 65535) throw new Error("Destination port must be 1..65535");
+  }
+}
+
+export async function addHostInputRule(input: {
+  interfaceName?: string; localAddress?: string|null; protocol:"all"|"tcp"|"udp"|"icmp";
+  destinationPort?: number|null; sourceCidr?: string; action:FirewallAction; enabled?:boolean; description?:string;
+}) {
+  const rule:HostInputFirewallRule={
+    id:randomUUID(), interfaceName:input.interfaceName||"*", localAddress:input.localAddress||null,
+    protocol:input.protocol, destinationPort:input.destinationPort??null, sourceCidr:input.sourceCidr||"0.0.0.0/0",
+    action:input.action, enabled:input.enabled??true, description:input.description?.trim()??""
+  };
+  validateHostInputRule(rule);
+  const config=await getFirewallConfig();
+  config.hostInputRules.push(rule); config.updatedAt=new Date().toISOString(); await saveConfig(config); return rule;
+}
+
+export async function deleteHostInputRule(id:string) {
+  const config=await getFirewallConfig();
+  const before=config.hostInputRules.length;
+  config.hostInputRules=config.hostInputRules.filter(r=>r.id!==id);
+  if(before===config.hostInputRules.length) throw new Error("Host INPUT rule not found");
+  config.updatedAt=new Date().toISOString(); await saveConfig(config);
+}
+
+async function buildInputRuleCommands(config:FirewallConfig) {
+  const commands:string[][]=[[
+    "-A",inputChain,"-m","conntrack","--ctstate","ESTABLISHED,RELATED",
+    "-m","comment","--comment",`${commentPrefix}input-state`,"-j","ACCEPT"
+  ]];
+  for(const rule of (config.hostInputRules??[]).filter(r=>r.enabled)){
+    validateHostInputRule(rule);
+    const args=["-A",inputChain,"-s",rule.sourceCidr];
+    if(rule.interfaceName!=="*") args.push("-i",rule.interfaceName);
+    if(rule.localAddress) args.push("-d",rule.localAddress);
+    if(rule.protocol!=="all") args.push("-p",rule.protocol);
+    if(rule.destinationPort!=null) args.push("--dport",String(rule.destinationPort));
+    args.push("-m","comment","--comment",`${commentPrefix}input:${rule.id}`,"-j",rule.action);
+    commands.push(args);
+  }
+  commands.push(["-A",inputChain,"-m","comment","--comment",`${commentPrefix}input-return`,"-j","RETURN"]);
+  return commands;
+}
+
+async function getHostNetworkRefs() {
+  let interfaces:Array<{name:string;addresses:string[]}>=[]; let defaultWanInterface:string|null=null;
+  let hostPorts:Array<{protocol:"tcp"|"udp";listenAddress:string;port:number}>=[];
+  try{
+    const {stdout}=await execFileAsync("ip",["-j","address","show"],{maxBuffer:1024*1024});
+    interfaces=(JSON.parse(stdout) as any[]).filter(x=>x.ifname&&x.ifname!=="lo").map(x=>({
+      name:String(x.ifname), addresses:(x.addr_info??[]).filter((a:any)=>a.family==="inet").map((a:any)=>`${a.local}/${a.prefixlen}`)
+    })).sort((a,b)=>a.name.localeCompare(b.name));
+  }catch{}
+  try{
+    const {stdout}=await execFileAsync("ip",["-j","route","show","default"],{maxBuffer:1024*1024});
+    defaultWanInterface=(JSON.parse(stdout) as any[])[0]?.dev??null;
+  }catch{}
+  try{
+    const {stdout}=await execFileAsync("ss",["-H","-lntu","-n"],{maxBuffer:1024*1024});
+    const refs=new Map<string,{protocol:"tcp"|"udp";listenAddress:string;port:number}>();
+    for(const line of stdout.split("\n").filter(Boolean)){
+      const fields=line.trim().split(/\s+/); const proto=fields[0]?.startsWith("tcp")?"tcp":fields[0]?.startsWith("udp")?"udp":null;
+      if(!proto)continue; const local=fields[4]??""; let address=""; let port=0;
+      const v6=local.match(/^\[([^\]]+)\]:(\d+)$/);
+      if(v6){address=v6[1];port=Number(v6[2]);}
+      else {const pos=local.lastIndexOf(":"); if(pos>=0){address=local.slice(0,pos)||"*";port=Number(local.slice(pos+1));}}
+      if(!Number.isInteger(port)||port<1)continue;
+      refs.set(`${proto}|${address}|${port}`,{protocol:proto,listenAddress:address,port});
+    }
+    hostPorts=[...refs.values()].sort((a,b)=>a.port-b.port||a.protocol.localeCompare(b.protocol));
+  }catch{}
+  return {interfaces,defaultWanInterface,hostPorts};
+}
+
 function cidrV4(subnets: Array<{ subnet: string | null }>) {
   return subnets
     .map((s) => s.subnet)
@@ -388,24 +497,13 @@ async function buildRuleCommands(config: FirewallConfig) {
 }
 
 async function render(config: FirewallConfig) {
-  await ensureChain();
-  await iptables(["-F", chain]);
-
-  if (!config.enabled) {
-    await removeJump();
-    return;
-  }
-
-  // Re-add jump if removeJump was used during a prior disable.
-  try {
-    await iptables(["-C", "DOCKER-USER", "-j", chain]);
-  } catch {
-    await iptables(["-I", "DOCKER-USER", "1", "-j", chain]);
-  }
-
-  for (const args of await buildRuleCommands(config)) {
-    await iptables(args);
-  }
+  await ensureChain(); await ensureInputChain();
+  await iptables(["-F", chain]); await iptables(["-F", inputChain]);
+  if (!config.enabled) { await removeJump(); await removeInputJump(); return; }
+  try { await iptables(["-C","DOCKER-USER","-j",chain]); } catch { await iptables(["-I","DOCKER-USER","1","-j",chain]); }
+  try { await iptables(["-C","INPUT","-j",inputChain]); } catch { await iptables(["-I","INPUT","1","-j",inputChain]); }
+  for (const args of await buildRuleCommands(config)) await iptables(args);
+  for (const args of await buildInputRuleCommands(config)) await iptables(args);
 }
 
 export async function applyFirewall() {
@@ -417,6 +515,7 @@ export async function applyFirewall() {
     ...draft,
     rules: draft.rules.map((r) => ({ ...r })),
     publishedPortRules: (draft.publishedPortRules ?? []).map((r) => ({ ...r })),
+    hostInputRules: (draft.hostInputRules ?? []).map((r) => ({ ...r })),
     enabled: true,
     updatedAt: new Date().toISOString()
   };
@@ -450,6 +549,7 @@ export async function disableFirewall() {
     ...draft,
     rules: draft.rules.map((r) => ({ ...r })),
     publishedPortRules: (draft.publishedPortRules ?? []).map((r) => ({ ...r })),
+    hostInputRules: (draft.hostInputRules ?? []).map((r) => ({ ...r })),
     enabled: false,
     updatedAt: new Date().toISOString()
   };
@@ -468,6 +568,7 @@ export async function rollbackFirewall() {
     ...backup,
     rules: backup.rules.map((r) => ({ ...r })),
     publishedPortRules: (backup.publishedPortRules ?? []).map((r) => ({ ...r })),
+    hostInputRules: (backup.hostInputRules ?? []).map((r) => ({ ...r })),
     updatedAt: new Date().toISOString()
   };
 
@@ -485,17 +586,22 @@ export async function getFirewallStatus() {
     JSON.stringify({
       enabled: config.enabled,
       rules: config.rules,
-      publishedPortRules: config.publishedPortRules ?? []
+      publishedPortRules: config.publishedPortRules ?? [],
+      hostInputRules: config.hostInputRules ?? []
     }) !==
     JSON.stringify({
       enabled: applied.enabled,
       rules: applied.rules,
-      publishedPortRules: applied.publishedPortRules ?? []
+      publishedPortRules: applied.publishedPortRules ?? [],
+      hostInputRules: applied.hostInputRules ?? []
     });
 
   let installedRules: string[] = [];
+  let installedInputRules: string[] = [];
   let chainPresent = false;
   let jumpPresent = false;
+  let inputChainPresent = false;
+  let inputJumpPresent = false;
   let error: string | null = null;
 
   try {
@@ -513,6 +619,13 @@ export async function getFirewallStatus() {
     } catch {
       jumpPresent = false;
     }
+    inputChainPresent=await inputChainExists();
+    if(inputChainPresent){
+      const {stdout}=await iptables(["-S",inputChain]);
+      installedInputRules=stdout.split("\n").map((x:string)=>x.trim()).filter(Boolean);
+    }
+    try{await iptables(["-C","INPUT","-j",inputChain]);inputJumpPresent=true;}catch{inputJumpPresent=false;}
+
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
@@ -550,6 +663,8 @@ export async function getFirewallStatus() {
       a.hostIp.localeCompare(b.hostIp)
     );
 
+  const hostRefs=await getHostNetworkRefs();
+
   return {
     engine: "iptables",
     managedChain: chain,
@@ -559,10 +674,16 @@ export async function getFirewallStatus() {
     lastAppliedAt: applied.updatedAt === new Date(0).toISOString() ? null : applied.updatedAt,
     networkRefs,
     publishedPortRefs,
+    hostInterfaces:hostRefs.interfaces,
+    defaultWanInterface:hostRefs.defaultWanInterface,
+    hostPortRefs:hostRefs.hostPorts,
     runtime: {
       chainPresent,
       jumpPresent,
       installedRules,
+      inputChainPresent,
+      inputJumpPresent,
+      installedInputRules,
       error
     }
   };

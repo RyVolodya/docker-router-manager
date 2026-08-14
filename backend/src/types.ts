@@ -85,6 +85,7 @@ export interface FirewallConfig {
   enabled: boolean;
   rules: FirewallRule[];
   publishedPortRules: PublishedPortFirewallRule[];
+  hostInputRules: HostInputFirewallRule[];
   updatedAt: string;
 }
 
@@ -116,4 +117,23 @@ export interface PublishedPortRef {
   publishedPort: number;
   hostIp: string;
   containerPort: number;
+}
+
+
+export interface HostInputFirewallRule {
+  id: string;
+  interfaceName: string;
+  localAddress?: string | null;
+  protocol: "all" | "tcp" | "udp" | "icmp";
+  destinationPort?: number | null;
+  sourceCidr: string;
+  action: FirewallAction;
+  enabled: boolean;
+  description?: string;
+}
+
+export interface HostPortRef {
+  protocol: "tcp" | "udp";
+  listenAddress: string;
+  port: number;
 }
