@@ -42,3 +42,8 @@ Thumbs.db
 # Temporary
 tmp/
 temp/
+
+# Documentation
+docs/images/
+*.md
+LICENSE
