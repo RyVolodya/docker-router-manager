@@ -216,42 +216,6 @@ Authentication uses server-side sessions, HttpOnly cookies, CSRF protection and 
 
 ---
 
-## Architecture
-
-```text
-                         ┌───────────────────────┐
-                         │        Browser        │
-                         └───────────┬───────────┘
-                                     │
-                                HTTP / HTTPS
-                                     │
-                         ┌───────────▼───────────┐
-                         │     DRM Frontend      │
-                         │    React + Nginx      │
-                         └───────────┬───────────┘
-                                     │
-                               Management API
-                                     │
-                         ┌───────────▼───────────┐
-                         │      DRM Backend      │
-                         │   host network mode   │
-                         └───────────┬───────────┘
-                                     │
-              ┌──────────────────────┼──────────────────────┐
-              │                      │                      │
-       Docker Engine            Linux Network          WireGuard
-       Docker socket         iptables / routes       wg interfaces
-              │                      │                      │
-       ┌──────┴──────┐        ┌──────┴──────┐        ┌─────┴─────┐
-       │ Containers  │        │ LAN / VLAN  │        │ VPN peers │
-       │  Networks   │        │ Forwarding  │        │  Routes   │
-       └─────────────┘        └─────────────┘        └───────────┘
-```
-
-The backend intentionally uses the **host network namespace** because DRM must manage the host routing table, WireGuard interfaces and Docker forwarding firewall.
-
----
-
 ## Installation
 
 ### Requirements
@@ -372,48 +336,6 @@ docker-router-manager/
 
 ---
 
-## Version 0.9.3
-
-### Changes since v0.8.5
-
-**Firewall & host INPUT**
-
-- Added host `INPUT` firewall management in addition to Docker published-port rules.
-- Host interfaces and listening TCP/UDP ports can be discovered and selected from the GUI.
-- Added source CIDR, protocol, port and `ACCEPT` / `DROP` / `REJECT` policies for host services.
-
-**WireGuard routing & Docker access**
-
-- Added per-interface **Routing & Access Policy**.
-- WireGuard networks can be granted access to selected Docker networks and custom LAN CIDRs.
-- Added IPv4 Internet forwarding with optional MASQUERADE.
-- Added a managed raw-table exception before Docker direct-container-address DROP rules, allowing explicitly selected WireGuard → Docker network traffic.
-- Added peer runtime information, endpoint visibility and interface deletion support.
-
-**WireGuard IPv6 / dual stack**
-
-- Added IPv6 support for WireGuard interfaces and peers.
-- Added **Enable IPv6** workflow with automatic gateway and peer-address suggestions.
-- Added IPv6 `AllowedIPs`, client routes and DNS support.
-- Added IPv6 Internet forwarding and optional NAT66.
-- Added IPv6 WireGuard → Docker IPv6 network access using dedicated managed chains.
-- DRM now exposes and manages host IPv6 forwarding state.
-
-**Containers & Routing**
-
-- Container network information can display IPv6 addresses alongside IPv4.
-- Routing now displays both IPv4 and IPv6 routes.
-- Added IPv6 static route creation.
-- Added editing and deletion of DRM-managed static routes.
-- Added support for IPv6 destinations, gateways, interfaces, metrics and `::/0`.
-
-**Compatibility**
-
-- Existing v0.9.x state remains compatible; new dual-stack fields use defaults when absent.
-- Kernel/Docker/WireGuard connected routes remain read-only; only DRM-managed static routes are editable.
-
----
-
 ## Roadmap
 
 Potential future development areas:
@@ -450,7 +372,7 @@ See the `LICENSE` file for the complete license text.
 
 <div align="center">
 
-**Docker Router Manager · v0.9.3**
+**Docker Router Manager · v0.9.9**
 
 *Docker networking with routing, firewall and VPN management in one interface.*
 
