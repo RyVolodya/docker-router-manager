@@ -257,7 +257,7 @@ Open DRM in your browser:
 http://DOCKER-HOST:8080
 ```
 
-Then sign in with the bootstrap account and immediately change its password.
+Then sign in with the bootstrap account and immediately change its password. Default login: admin password: admin
 
 ---
 
