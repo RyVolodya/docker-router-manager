@@ -718,7 +718,6 @@ See [LICENSE](LICENSE) for the complete license text.
 
 ------------------------------------------------------------------------
 
-::: {align="center"}
 ### Docker Router Manager
 
 **Docker networking, routing, firewall and WireGuard management from one
@@ -730,4 +729,3 @@ web interface.**
 
 **If DRM helps you manage your Docker network, consider giving it a
 ⭐.**
-:::
