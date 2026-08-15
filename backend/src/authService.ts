@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
 import { hash, verify } from "@node-rs/argon2";
 
 export type UserRole = "administrator" | "operator" | "viewer";
@@ -28,7 +28,8 @@ export interface SessionRecord {
 const dataDir = process.env.DRM_DATA_DIR ?? "/data";
 const usersPath = `${dataDir}/users.json`;
 const sessionsPath = `${dataDir}/sessions.json`;
-const sessionTtlMs = Number(process.env.SESSION_TTL_MS ?? 8 * 60 * 60 * 1000);
+const sessionTtlMs = Number(process.env.SESSION_TTL_MS ?? 24 * 60 * 60 * 1000);
+const sessionTouchIntervalMs = Number(process.env.SESSION_TOUCH_INTERVAL_MS ?? 5 * 60 * 1000);
 
 const argonOptions = {
   memoryCost: 19456,
@@ -41,9 +42,24 @@ async function loadJson<T>(path: string, fallback: T): Promise<T> {
   catch { return fallback; }
 }
 
+const jsonWriteLocks = new Map<string, Promise<void>>();
+
 async function saveJson(path: string, value: unknown) {
   await mkdir(dataDir, { recursive: true });
-  await writeFile(path, JSON.stringify(value, null, 2), { mode: 0o600 });
+  const previous = jsonWriteLocks.get(path) ?? Promise.resolve();
+
+  const current = previous.catch(() => undefined).then(async () => {
+    const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    await writeFile(tempPath, JSON.stringify(value, null, 2), { mode: 0o600 });
+    await rename(tempPath, path);
+  });
+
+  jsonWriteLocks.set(path, current);
+  try {
+    await current;
+  } finally {
+    if (jsonWriteLocks.get(path) === current) jsonWriteLocks.delete(path);
+  }
 }
 
 function publicUser(user: UserRecord) {
@@ -147,14 +163,27 @@ export async function createSession(userId: string) {
 
 export async function getSession(sessionId: string | undefined) {
   if (!sessionId) return null;
+
   const sessions = await getSessionsRaw();
   const session = sessions.find(s => s.id === sessionId);
-  if (!session || new Date(session.expiresAt).getTime() <= Date.now()) return null;
+  const now = Date.now();
+
+  if (!session || new Date(session.expiresAt).getTime() <= now) return null;
+
   const users = await getUsersRaw();
   const user = users.find(u => u.id === session.userId && !u.disabled);
   if (!user) return null;
-  session.lastSeenAt = new Date().toISOString();
-  await saveJson(sessionsPath, sessions);
+
+  // Avoid rewriting sessions.json on every API request. The GUI performs several
+  // parallel polls; writing the same JSON file for every read could cause races.
+  // Touch at most once per interval and use rolling expiration for active sessions.
+  const lastSeen = new Date(session.lastSeenAt || session.createdAt).getTime();
+  if (!Number.isFinite(lastSeen) || now - lastSeen >= sessionTouchIntervalMs) {
+    session.lastSeenAt = new Date(now).toISOString();
+    session.expiresAt = new Date(now + sessionTtlMs).toISOString();
+    await saveJson(sessionsPath, sessions);
+  }
+
   return { session, user, publicUser: publicUser(user) };
 }
 

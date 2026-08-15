@@ -868,3 +868,120 @@ h1 { margin:4px 0 0; font-size:25px; letter-spacing:-.5px; }
 [data-theme="light"] .ipv6-value{color:#7257d8!important}
 @media(max-width:1150px){.table-head.ports-aware.dual-stack-containers,.table-row.ports-aware.dual-stack-containers{grid-template-columns:1.25fr 1fr .8fr 1fr .8fr .65fr}.table-head.ports-aware.dual-stack-containers>:nth-child(2),.table-row.ports-aware.dual-stack-containers>:nth-child(2){display:none}.route-builder.route-builder-dual{grid-template-columns:1fr 1fr 1fr}}
 @media(max-width:760px){.routing-forward-grid{grid-template-columns:1fr}.route-table-head.route-table-dual{display:none}.route-table-row.route-table-dual{grid-template-columns:.6fr 1.4fr 1fr;padding:10px}.route-table-row.route-table-dual>:nth-child(4),.route-table-row.route-table-dual>:nth-child(5),.route-table-row.route-table-dual>:nth-child(6){display:none}.managed-route.managed-route-dual{grid-template-columns:.6fr 1.4fr auto}.managed-route.managed-route-dual>span:nth-child(3){display:none}}
+
+
+/* v0.9.5 WireGuard peer management */
+.wg-peer-mode{display:inline-flex;align-items:center;padding:3px 7px;border-radius:999px;font-size:8px;font-weight:800;letter-spacing:.4px;border:1px solid #29425f;color:#8cb8ff;background:rgba(77,141,255,.08)}
+.wg-peer-mode.site{color:#c49cff;border-color:#50386e;background:rgba(166,105,255,.08)}
+.wg-status.disabled{color:#9aa7b9;background:rgba(130,145,165,.08);border:1px solid rgba(130,145,165,.2)}
+.wg-peer-builder select{width:100%;height:36px;border:1px solid #213047;background:#0b121c;color:#dce6f6;border-radius:7px;padding:0 9px;outline:none;font-size:10px}
+[data-theme="light"] .wg-peer-builder select{background:#fff;color:#172033;border-color:#d4deeb}
+
+
+/* v0.9.6 persistent global notifications */
+.notification-center{
+  position:fixed;
+  top:16px;
+  right:18px;
+  z-index:10000;
+  width:min(430px,calc(100vw - 28px));
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  pointer-events:none;
+}
+.notification-clear{
+  pointer-events:auto;
+  align-self:flex-end;
+  border:1px solid #26364b;
+  background:#0c1521;
+  color:#8292aa;
+  border-radius:7px;
+  padding:5px 9px;
+  font-size:9px;
+  cursor:pointer;
+}
+.drm-notification{
+  pointer-events:auto;
+  display:grid;
+  grid-template-columns:22px 1fr 28px;
+  align-items:start;
+  gap:9px;
+  padding:12px 10px 12px 12px;
+  border-radius:10px;
+  border:1px solid #26364b;
+  background:#0d1724;
+  box-shadow:0 12px 35px rgba(0,0,0,.28);
+}
+.drm-notification.success{border-color:rgba(50,211,145,.35);}
+.drm-notification.success>svg{color:#47dca2;}
+.drm-notification.error{border-color:rgba(255,93,110,.42);}
+.drm-notification.error>svg{color:#ff6879;}
+.drm-notification.info{border-color:rgba(85,151,255,.38);}
+.drm-notification.info>svg{color:#6da7ff;}
+.notification-copy{min-width:0;display:flex;flex-direction:column;gap:3px;}
+.notification-copy strong{font-size:11px;color:#e7eef9;line-height:1.35;}
+.notification-copy span{font-size:9px;color:#8b9ab0;line-height:1.45;overflow-wrap:anywhere;}
+.notification-close{
+  width:27px;height:27px;
+  display:grid;place-items:center;
+  border:0;border-radius:6px;
+  background:transparent;color:#78889f;
+  cursor:pointer;
+}
+.notification-close:hover{background:rgba(255,255,255,.05);color:#dfe8f5;}
+[data-theme="light"] .notification-clear{background:#fff;border-color:#d9e2ee;color:#63738a;}
+[data-theme="light"] .drm-notification{background:#fff;border-color:#d9e2ee;box-shadow:0 12px 30px rgba(43,58,79,.14);}
+[data-theme="light"] .notification-copy strong{color:#172033;}
+[data-theme="light"] .notification-copy span{color:#65758b;}
+[data-theme="light"] .notification-close:hover{background:#f0f4f9;color:#27364a;}
+@media(max-width:720px){
+  .notification-center{top:10px;right:10px;width:calc(100vw - 20px);}
+}
+
+
+/* v0.9.7 interactive topology */
+.flow .react-flow__pane {
+  cursor: grab;
+}
+.flow .react-flow__pane.dragging {
+  cursor: grabbing;
+}
+.flow .react-flow__node {
+  cursor: grab;
+}
+.flow .react-flow__node.dragging {
+  cursor: grabbing;
+  z-index: 20 !important;
+}
+.flow .react-flow__controls {
+  border: 1px solid #24334a;
+  border-radius: 8px;
+  overflow: hidden;
+}
+[data-theme="light"] .flow .react-flow__controls {
+  border-color: #d5deea;
+}
+
+
+/* v0.9.8 topology layout lock */
+.flow .react-flow__node {
+  cursor: default;
+}
+.flow .react-flow__node.draggable {
+  cursor: grab;
+}
+.flow .react-flow__node.draggable.dragging {
+  cursor: grabbing;
+}
+
+.notification-action{
+  display:inline-flex;
+  width:max-content;
+  margin-top:5px;
+  color:#79aaff;
+  font-size:9px;
+  font-weight:700;
+  text-decoration:none;
+}
+.notification-action:hover{text-decoration:underline;}

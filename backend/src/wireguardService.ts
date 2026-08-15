@@ -12,12 +12,15 @@ const statePath=`${wgDir}/state.json`;
 type Peer={
   id:string;
   name:string;
+  mode?:"remote-access"|"site-to-site";
+  enabled?:boolean;
   publicKey:string;
   privateKey?:string;
   serverAllowedIps:string[];
   clientAllowedIps:string[];
   clientAddress?:string;
   clientIpv6Address?:string;
+  remoteNetworks?:string[];
   endpoint?:string;
   endpointHost?:string;
   endpointPort?:number;
@@ -113,6 +116,47 @@ function validateCidr(cidr:string){
   if(!fam || !Number.isInteger(prefix) || prefix<0 || (fam===4&&prefix>32) || (fam===6&&prefix>128)) throw new Error(`Invalid CIDR: ${cidr}`);
   return fam;
 }
+
+function peerMode(peer:Peer){return peer.mode??"remote-access";}
+function peerEnabled(peer:Peer){return peer.enabled!==false;}
+function peerRemoteNetworks(peer:Peer){return uniq((peer.remoteNetworks??[]).map(x=>x.trim())).filter(Boolean);}
+function computedServerAllowedIps(peer:Peer){
+  if(peerMode(peer)!=="site-to-site") return uniq(peer.serverAllowedIps??[]);
+  return uniq([peer.clientAddress??"",peer.clientIpv6Address??"",...peerRemoteNetworks(peer)]).filter(Boolean);
+}
+function cidrRange(cidr:string):{family:4|6;start:bigint;end:bigint}{
+  const [ip,prefixRaw]=cidr.split('/'); const prefix=Number(prefixRaw); const family=isIP(ip) as 4|6;
+  if(family===4){
+    const o=ip.split('.').map(Number); let value=0n; for(const n of o)value=(value<<8n)|BigInt(n);
+    const bits=32n; const host=bits-BigInt(prefix); const mask=host===32n?0n:((1n<<bits)-1n)^((1n<<host)-1n); const start=value&mask; const end=start+((1n<<host)-1n); return{family,start,end};
+  }
+  const expand=(addr:string)=>{const [l,r='']=addr.split('::');const la=l?l.split(':'):[];const ra=r?r.split(':'):[];const missing=8-la.length-ra.length;return [...la,...Array(Math.max(0,missing)).fill('0'),...ra].map(x=>parseInt(x||'0',16));};
+  const h=expand(ip); let value=0n; for(const n of h)value=(value<<16n)|BigInt(n); const bits=128n; const host=bits-BigInt(prefix); const mask=host===128n?0n:((1n<<bits)-1n)^((1n<<host)-1n); const start=value&mask; const end=start+((1n<<host)-1n); return{family,start,end};
+}
+function cidrOverlaps(a:string,b:string){const A=cidrRange(a),B=cidrRange(b);return A.family===B.family && A.start<=B.end && B.start<=A.end;}
+function validatePeerOverlap(item:WgInterface,candidate:Peer,excludeId?:string){
+  const cand=computedServerAllowedIps(candidate); cand.forEach(validateCidr);
+  for(const other of item.peers){if(other.id===excludeId || !peerEnabled(other))continue; for(const a of cand)for(const b of computedServerAllowedIps(other)){if(cidrOverlaps(a,b))throw new Error(`AllowedIPs overlap: ${a} conflicts with peer ${other.name} (${b})`);}}
+}
+async function removePeerRoutes(item:WgInterface,networks:string[]){
+  for(const cidr of networks){
+    try{await run('ip',[cidrFamily(cidr)===6?'-6':'-4','route','del',cidr,'dev',item.name]);}catch{}
+  }
+}
+async function syncPeerRoutes(item:WgInterface){
+  // Remove only routes previously managed by site-to-site peers in current state, then recreate enabled ones.
+  // Route ownership is identified by destination+wg interface. Errors on missing routes are harmless.
+  for(const peer of item.peers){
+    for(const cidr of peerRemoteNetworks(peer)){
+      try{await run('ip',[cidrFamily(cidr)===6?'-6':'-4','route','del',cidr,'dev',item.name]);}catch{}
+    }
+  }
+  for(const peer of item.peers.filter(p=>peerEnabled(p)&&peerMode(p)==='site-to-site')){
+    for(const cidr of peerRemoteNetworks(peer)){
+      validateCidr(cidr); await run('ip',[cidrFamily(cidr)===6?'-6':'-4','route','replace',cidr,'dev',item.name]);
+    }
+  }
+}
 async function genKeyPair(){const privateKey=await run("wg",["genkey"]);const publicKey=await run("wg",["pubkey"],privateKey+"\n");return{privateKey,publicKey};}
 async function keyFile(name:string,key:string){const path=`${wgDir}/${name}.key`;await writeFile(path,key+"\n",{mode:0o600});return path;}
 
@@ -193,6 +237,8 @@ async function applyAccessPolicies(state:WgState){
     const p=item.accessPolicy!;
     const src4=addressesForFamily(item,4)[0];
     const src6=addressesForFamily(item,6)[0];
+    const remote4=uniq(item.peers.filter(x=>peerEnabled(x)&&peerMode(x)==="site-to-site").flatMap(peerRemoteNetworks).filter(x=>cidrFamily(x)===4));
+    const remote6=uniq(item.peers.filter(x=>peerEnabled(x)&&peerMode(x)==="site-to-site").flatMap(peerRemoteNetworks).filter(x=>cidrFamily(x)===6));
     const docker4=cidrsForFamily(p.dockerCidrs,4);
     const docker6=cidrsForFamily(p.dockerCidrs,6);
     const lan4=cidrsForFamily(p.lanCidrs,4);
@@ -210,6 +256,11 @@ async function applyAccessPolicies(state:WgState){
         if(!p.wanInterface) throw new Error(`IPv4 WAN interface is required for ${item.name}`);
         await ipt(["-A",wgForwardChain,"-i",item.name,"-s",src4,"-o",p.wanInterface,"-m","comment","--comment",`DRM:wg:${item.name}:internet`,"-j","ACCEPT"]);
         if(p.nat) await iptNat(["-A",wgNatChain,"-s",src4,"-o",p.wanInterface,"-m","comment","--comment",`DRM:wg-nat:${item.name}`,"-j","MASQUERADE"]);
+      }
+      for(const remote of remote4){
+        for(const cidr of docker4) await iptRaw(["-A",wgRawChain,"-i",item.name,"-s",remote,"-d",cidr,"-m","comment","--comment",`DRM:wg-raw:${item.name}:site`,"-j","ACCEPT"]);
+        for(const cidr of [...docker4,...lan4]) await ipt(["-A",wgForwardChain,"-i",item.name,"-s",remote,"-d",cidr,"-m","comment","--comment",`DRM:wg:${item.name}:site`,"-j","ACCEPT"]);
+        await ipt(["-A",wgForwardChain,"-i",item.name,"-s",remote,"-m","comment","--comment",`DRM:wg:${item.name}:site-default-drop`,"-j","DROP"]);
       }
       await ipt(["-A",wgForwardChain,"-i",item.name,"-s",src4,"-m","comment","--comment",`DRM:wg:${item.name}:default-drop`,"-j","DROP"]);
     }
@@ -229,6 +280,11 @@ async function applyAccessPolicies(state:WgState){
           try{await ip6tNat(["-A",wg6NatChain,"-s",src6,"-o",wan6,"-m","comment","--comment",`DRM:wg6-nat:${item.name}`,"-j","MASQUERADE"]);}
           catch(e){throw new Error(`IPv6 NAT66 is unavailable on this host: ${e instanceof Error?e.message:String(e)}`);}
         }
+      }
+      for(const remote of remote6){
+        for(const cidr of docker6) await ip6tRaw(["-A",wg6RawChain,"-i",item.name,"-s",remote,"-d",cidr,"-m","comment","--comment",`DRM:wg6-raw:${item.name}:site`,"-j","ACCEPT"]);
+        for(const cidr of [...docker6,...lan6]) await ip6t(["-A",wg6ForwardChain,"-i",item.name,"-s",remote,"-d",cidr,"-m","comment","--comment",`DRM:wg6:${item.name}:site`,"-j","ACCEPT"]);
+        await ip6t(["-A",wg6ForwardChain,"-i",item.name,"-s",remote,"-m","comment","--comment",`DRM:wg6:${item.name}:site-default-drop`,"-j","DROP"]);
       }
       await ip6t(["-A",wg6ForwardChain,"-i",item.name,"-s",src6,"-m","comment","--comment",`DRM:wg6:${item.name}:default-drop`,"-j","DROP"]);
     }
@@ -289,12 +345,15 @@ async function applyInterface(item:WgInterface){
   for(const address of normalized.addresses) await run("ip",["address","add",address,"dev",item.name]);
   await run("ip",["link","set","dev",item.name,"mtu",String(item.mtu),"up"]);
   for(const peer of item.peers){
+    if(!peerEnabled(peer)){try{await run("wg",["set",item.name,"peer",peer.publicKey,"remove"]);}catch{};continue;}
+    const allowed=computedServerAllowedIps(peer); validatePeerOverlap(item,peer,peer.id);
     const args=["set",item.name,"peer",peer.publicKey];
-    if(peer.serverAllowedIps.length) args.push("allowed-ips",peer.serverAllowedIps.join(","));
+    if(allowed.length) args.push("allowed-ips",allowed.join(","));
     const endpoint=endpointString(peer); if(endpoint) args.push("endpoint",endpoint);
     if(peer.persistentKeepalive>0) args.push("persistent-keepalive",String(peer.persistentKeepalive));
     await run("wg",args);
   }
+  await syncPeerRoutes(item);
 }
 
 export async function restoreWireGuard(){
@@ -336,7 +395,7 @@ export async function getWireGuardStatus(){
       const i=normalizeInterface(raw); const v4=i.addresses!.find(a=>cidrFamily(a)===4); const v6=i.addresses!.find(a=>cidrFamily(a)===6);
       return{name:i.name,address:v4??i.addresses![0]??"",ipv6Address:v6??null,addresses:i.addresses,listenPort:i.listenPort,mtu:i.mtu,publicKey:i.publicKey,
         accessPolicy:i.accessPolicy??{enabled:false,dockerCidrs:[],lanCidrs:[],internet:false,nat:false,wanInterface:hints.defaultWanInterface,internet6:false,nat66:false,wanInterface6:hints.defaultWanInterface6},
-        peers:i.peers.map(p=>({...p,...endpointParts(p),privateKey:undefined,runtime:runtimePeers.get(i.name)?.get(p.publicKey)??emptyPeerRuntime()}))};
+        peers:i.peers.map(p=>({...p,mode:peerMode(p),enabled:peerEnabled(p),remoteNetworks:peerRemoteNetworks(p),serverAllowedIps:computedServerAllowedIps(p),...endpointParts(p),privateKey:undefined,runtime:runtimePeers.get(i.name)?.get(p.publicKey)??emptyPeerRuntime()}))};
     })
   };
 }
@@ -414,28 +473,53 @@ export async function deleteWireGuardInterface(name:string){
 export async function addWireGuardPeer(iface:string,input:any){
   validName(iface); const state=await load(); const item=state.interfaces.find(i=>i.name===iface); if(!item)throw new Error("Interface not found");
   const keys=input.publicKey?{publicKey:String(input.publicKey),privateKey:undefined}:await genKeyPair();
-  const serverAllowedIps=(input.serverAllowedIps||[]).map(String).map((x:string)=>x.trim()).filter(Boolean); if(!serverAllowedIps.length)throw new Error("Server AllowedIPs are required"); serverAllowedIps.forEach(validateCidr);
-  const clientAllowedIps=(input.clientAllowedIps||[]).map(String).map((x:string)=>x.trim()).filter(Boolean); clientAllowedIps.forEach(validateCidr);
+  const mode=input.mode==="site-to-site"?"site-to-site":"remote-access";
+  const enabled=input.enabled!==false;
   const clientAddress=input.clientAddress?String(input.clientAddress).trim():undefined; if(clientAddress)validateCidr(clientAddress);
   const ifaceV6=addressesForFamily(item,6)[0];
   const requestedClientV6=input.clientIpv6Address?String(input.clientIpv6Address).trim():undefined;
-  const clientIpv6Address=requestedClientV6 || (ifaceV6 ? autoIpv6PeerFromGateway(ifaceV6,item.peers.length) : undefined);
-  if(clientIpv6Address)validateCidr(clientIpv6Address);
-  if(clientIpv6Address && !serverAllowedIps.includes(clientIpv6Address)) serverAllowedIps.push(clientIpv6Address);
+  const clientIpv6Address=requestedClientV6 || (ifaceV6 ? autoIpv6PeerFromGateway(ifaceV6,item.peers.length) : undefined); if(clientIpv6Address)validateCidr(clientIpv6Address);
+  const remoteNetworks=(input.remoteNetworks||[]).map(String).map((x:string)=>x.trim()).filter(Boolean); remoteNetworks.forEach(validateCidr);
+  let serverAllowedIps=(input.serverAllowedIps||[]).map(String).map((x:string)=>x.trim()).filter(Boolean); serverAllowedIps.forEach(validateCidr);
+  if(mode==="site-to-site") serverAllowedIps=uniq([clientAddress??"",clientIpv6Address??"",...remoteNetworks]).filter(Boolean);
+  else if(clientIpv6Address && !serverAllowedIps.includes(clientIpv6Address)) serverAllowedIps.push(clientIpv6Address);
+  const clientAllowedIps=(input.clientAllowedIps||[]).map(String).map((x:string)=>x.trim()).filter(Boolean); clientAllowedIps.forEach(validateCidr);
   const endpointHost=input.endpointHost?String(input.endpointHost).trim():undefined; const endpointPort=input.endpointPort?Number(input.endpointPort):undefined;
   if(endpointPort!==undefined&&(!Number.isInteger(endpointPort)||endpointPort<1||endpointPort>65535))throw new Error("Endpoint port must be 1..65535");
-  const peer:Peer={id:randomUUID(),name:String(input.name||"peer"),publicKey:keys.publicKey,privateKey:keys.privateKey,serverAllowedIps,clientAllowedIps,clientAddress,clientIpv6Address,endpoint:input.endpoint?String(input.endpoint):undefined,endpointHost,endpointPort,dns:input.dns?String(input.dns).trim():undefined,persistentKeepalive:Number(input.persistentKeepalive||0)};
-  item.peers.push(peer); await applyInterface(item); await save(state); return{id:peer.id,publicKey:peer.publicKey,clientConfigAvailable:Boolean(peer.privateKey)};
+  const peer:Peer={id:randomUUID(),name:String(input.name||"peer"),mode,enabled,publicKey:keys.publicKey,privateKey:keys.privateKey,serverAllowedIps,clientAllowedIps,clientAddress,clientIpv6Address,remoteNetworks,endpoint:input.endpoint?String(input.endpoint):undefined,endpointHost,endpointPort,dns:input.dns?String(input.dns).trim():undefined,persistentKeepalive:Number(input.persistentKeepalive||0)};
+  validatePeerOverlap(item,peer); item.peers.push(peer); await applyInterface(item); await save(state); await applyAccessPolicies(state); return{id:peer.id,publicKey:peer.publicKey,clientConfigAvailable:Boolean(peer.privateKey)};
+}
+
+export async function updateWireGuardPeer(iface:string,id:string,input:any){
+  validName(iface); const state=await load(); const item=state.interfaces.find(i=>i.name===iface); if(!item)throw new Error("Interface not found"); const peer=item.peers.find(p=>p.id===id); if(!peer)throw new Error("Peer not found");
+  if(input.publicKey && String(input.publicKey)!==peer.publicKey) throw new Error("Public key cannot be changed in Edit; recreate the peer to change identity");
+  const mode=input.mode==="site-to-site"?"site-to-site":input.mode==="remote-access"?"remote-access":peerMode(peer);
+  const remoteNetworks=(input.remoteNetworks??peer.remoteNetworks??[]).map(String).map((x:string)=>x.trim()).filter(Boolean); remoteNetworks.forEach(validateCidr);
+  const clientAddress=input.clientAddress===null?undefined:input.clientAddress!==undefined?String(input.clientAddress).trim():peer.clientAddress; if(clientAddress)validateCidr(clientAddress);
+  const clientIpv6Address=input.clientIpv6Address===null?undefined:input.clientIpv6Address!==undefined?String(input.clientIpv6Address).trim():peer.clientIpv6Address; if(clientIpv6Address)validateCidr(clientIpv6Address);
+  let serverAllowedIps=(input.serverAllowedIps??peer.serverAllowedIps??[]).map(String).map((x:string)=>x.trim()).filter(Boolean); serverAllowedIps.forEach(validateCidr);
+  if(mode==="site-to-site")serverAllowedIps=uniq([clientAddress??"",clientIpv6Address??"",...remoteNetworks]).filter(Boolean);
+  const clientAllowedIps=(input.clientAllowedIps??peer.clientAllowedIps??[]).map(String).map((x:string)=>x.trim()).filter(Boolean);clientAllowedIps.forEach(validateCidr);
+  const next:Peer={...peer,name:input.name!==undefined?String(input.name):peer.name,mode,enabled:input.enabled!==undefined?Boolean(input.enabled):peerEnabled(peer),clientAddress,clientIpv6Address,remoteNetworks,serverAllowedIps,clientAllowedIps,endpointHost:input.endpointHost!==undefined?String(input.endpointHost).trim()||undefined:peer.endpointHost,endpointPort:input.endpointPort!==undefined?(input.endpointPort?Number(input.endpointPort):undefined):peer.endpointPort,dns:input.dns!==undefined?(String(input.dns).trim()||undefined):peer.dns,persistentKeepalive:input.persistentKeepalive!==undefined?Number(input.persistentKeepalive||0):peer.persistentKeepalive};
+  if(next.endpointPort!==undefined&&(!Number.isInteger(next.endpointPort)||next.endpointPort<1||next.endpointPort>65535))throw new Error("Endpoint port must be 1..65535");
+  validatePeerOverlap(item,next,id); const oldRemote=peerRemoteNetworks(peer); await removePeerRoutes(item,oldRemote); Object.assign(peer,next); await applyInterface(item); await save(state); await applyAccessPolicies(state); return getWireGuardStatus();
+}
+
+export async function setWireGuardPeerEnabled(iface:string,id:string,enabled:boolean){
+  const state=await load(); const item=state.interfaces.find(i=>i.name===iface); if(!item)throw new Error("Interface not found"); const peer=item.peers.find(p=>p.id===id); if(!peer)throw new Error("Peer not found");
+  peer.enabled=enabled; if(!enabled){try{await run("wg",["set",iface,"peer",peer.publicKey,"remove"]);}catch{}}
+  await applyInterface(item); await save(state); await applyAccessPolicies(state); return getWireGuardStatus();
 }
 
 export async function deleteWireGuardPeer(iface:string,id:string){
   const state=await load(); const item=state.interfaces.find(i=>i.name===iface); if(!item)throw new Error("Interface not found"); const peer=item.peers.find(p=>p.id===id); if(!peer)throw new Error("Peer not found");
   try{await run("wg",["set",iface,"peer",peer.publicKey,"remove"]);}catch{}
-  item.peers=item.peers.filter(p=>p.id!==id); await save(state);
+  await removePeerRoutes(item,peerRemoteNetworks(peer)); item.peers=item.peers.filter(p=>p.id!==id); await syncPeerRoutes(item); await save(state); await applyAccessPolicies(state);
 }
 
 export async function getClientConfig(iface:string,id:string){
   const state=await load(); const item=state.interfaces.find(i=>i.name===iface); if(!item)throw new Error("Interface not found"); const peer=item.peers.find(p=>p.id===id); if(!peer)throw new Error("Peer not found");
+  if(!peerEnabled(peer))throw new Error("Peer is disabled");
   if(!peer.privateKey)throw new Error("Client private key is not stored for this peer");
   const clientAddresses=uniq([peer.clientAddress??"",peer.clientIpv6Address??""]).filter(Boolean); if(!clientAddresses.length)throw new Error("Client address is missing"); if(!endpointString(peer))throw new Error("Server endpoint is missing");
   const lines=["[Interface]",`PrivateKey = ${peer.privateKey}`,`Address = ${clientAddresses.join(", ")}`];

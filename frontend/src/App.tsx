@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Activity, Boxes, Container, GitBranch, LayoutDashboard, Network,
-  RefreshCw, Route, Search, Server, Shield, Wifi, CircleDot, Plug, Trash2, KeyRound, Waypoints, Plus, UserCog, LogOut, Moon, Sun, Download, QrCode
+  RefreshCw, Route, Search, Server, Shield, Wifi, CircleDot, Plug, Trash2, KeyRound, Waypoints, Plus, UserCog, LogOut, Moon, Sun, Download, QrCode, X, CheckCircle2, AlertTriangle, Info
 } from "lucide-react";
-import { Background, Controls, Edge, MarkerType, MiniMap, Node, ReactFlow, useNodesState } from "@xyflow/react";
-import { addManagementUser, changeManagementRole, changePassword, createFirewallRule, createHostInputRule, createPublishedPortRule, firewallAction, getFirewallStatus, getMe, getNetworkStats, getTopology, listManagementUsers, login, logout, removeFirewallRule, removeHostInputRule, removeManagementUser, removePublishedPortRule, resetManagementPassword, createRoute, createWgInterface, createWgPeer, getRoutingStatus, getWgClientConfig, getWgClientQr, getWireGuard, removeRoute, updateRoute, removeWgInterface, removeWgPeer, setRoutingForward, setRoutingForward6, setWgAccessPolicy, setWgIpv6 } from "./api";
+import { Background, Controls, Edge, MarkerType, Node, ReactFlow, useNodesState } from "@xyflow/react";
+import { getUpdateStatus,  addManagementUser, changeManagementRole, changePassword, createFirewallRule, createHostInputRule, createPublishedPortRule, firewallAction, getFirewallStatus, getMe, getNetworkStats, getTopology, listManagementUsers, login, logout, removeFirewallRule, removeHostInputRule, removeManagementUser, removePublishedPortRule, resetManagementPassword, createRoute, createWgInterface, createWgPeer, getRoutingStatus, getWgClientConfig, getWgClientQr, getWireGuard, removeRoute, updateRoute, removeWgInterface, removeWgPeer, setRoutingForward, setRoutingForward6, setWgAccessPolicy, setWgIpv6, updateWgPeer, setWgPeerEnabled } from "./api";
 import type { DockerContainer, DockerNetwork, FirewallStatus, NetworkStatsResponse, RoutingStatus, Topology, WireGuardStatus } from "./types";
 
 type Page = "dashboard" | "networks" | "containers" | "ports" | "topology" | "firewall" | "routing" | "wireguard" | "management";
@@ -22,6 +22,57 @@ const navigation = [
   { id: "wireguard" as Page, label: "WireGuard", icon: KeyRound },
   { id: "management" as Page, label: "Management", icon: UserCog }
 ];
+
+
+type DrmNotification={
+  id:string;
+  type:"success"|"error"|"info";
+  message:string;
+  detail?:string;
+  actionUrl?:string;
+  actionLabel?:string;
+};
+
+function NotificationCenter(){
+  const [items,setItems]=useState<DrmNotification[]>([]);
+
+  useEffect(()=>{
+    const handler=(event:Event)=>{
+      const custom=event as CustomEvent<{type:"success"|"error"|"info";message:string;detail?:string;actionUrl?:string;actionLabel?:string}>;
+      const detail=custom.detail;
+      if(!detail?.message)return;
+      const item:DrmNotification={
+        id:`${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        type:detail.type||"info",
+        message:detail.message,
+        detail:detail.detail,
+        actionUrl:detail.actionUrl,
+        actionLabel:detail.actionLabel
+      };
+      setItems(current=>[item,...current].slice(0,20));
+    };
+    window.addEventListener("drm-notification",handler);
+    return()=>window.removeEventListener("drm-notification",handler);
+  },[]);
+
+  if(!items.length)return null;
+
+  return <div className="notification-center" aria-live="polite">
+    {items.length>1&&<button className="notification-clear" onClick={()=>setItems([])}>Clear all</button>}
+    {items.map(item=>{
+      const Icon=item.type==="success"?CheckCircle2:item.type==="error"?AlertTriangle:Info;
+      return <div key={item.id} className={`drm-notification ${item.type}`}>
+        <Icon size={18}/>
+        <div className="notification-copy">
+          <strong>{item.message}</strong>
+          {item.detail&&<span>{item.detail}</span>}
+          {item.actionUrl&&<a className="notification-action" href={item.actionUrl} target="_blank" rel="noreferrer">{item.actionLabel||"Open"}</a>}
+        </div>
+        <button className="notification-close" onClick={()=>setItems(current=>current.filter(x=>x.id!==item.id))} title="Close"><X size={16}/></button>
+      </div>;
+    })}
+  </div>;
+}
 
 function MainApp({auth,onAuthChange,onLogout,theme,onToggleTheme}:{auth:AuthUser;onAuthChange:(u:AuthUser)=>void;onLogout:()=>void;theme:"dark"|"light";onToggleTheme:()=>void}) {
   const [page, setPage] = useState<Page>("dashboard");
@@ -135,7 +186,7 @@ function MainApp({auth,onAuthChange,onLogout,theme,onToggleTheme}:{auth:AuthUser
             <span className="theme-toggle-text">{theme==="dark"?"Light theme":"Dark theme"}</span>
           </button>
           <div className="sidebar-user"><strong>{auth.username}</strong><span>{auth.role}</span><button onClick={onLogout} title="Logout"><LogOut size={14}/></button></div>
-          <div className="version">DRM v0.9.3</div>
+          <div className="version">DRM v0.9.9</div>
         </div>
       </aside>
 
@@ -252,11 +303,27 @@ function AuthenticatedApp(){
     const expired=()=>setAuth(null); window.addEventListener("drm-auth-expired",expired);
     return()=>window.removeEventListener("drm-auth-expired",expired);
   },[]);
+
+  useEffect(()=>{
+    if(!auth || auth.mustChangePassword)return;
+    let cancelled=false;
+    getUpdateStatus().then(status=>{
+      if(cancelled || !status.updateAvailable || !status.latestVersion || !status.releaseUrl)return;
+      window.dispatchEvent(new CustomEvent("drm-notification",{detail:{
+        type:"info",
+        message:`New DRM version ${status.latestVersion} is available`,
+        detail:`You are running v${status.currentVersion}. Open the GitHub release to view changes and download the new version.`,
+        actionUrl:status.releaseUrl,
+        actionLabel:"View release on GitHub"
+      }}));
+    }).catch(()=>{ /* Update checks must never interrupt login. */ });
+    return()=>{cancelled=true};
+  },[auth?.id,auth?.mustChangePassword]);
   async function signOut(){try{await logout();}catch{}setAuth(null);}
   if(checking)return <div className="auth-page"><div className="auth-loading">Loading DRM…</div></div>;
   if(!auth)return <LoginScreen onAuthenticated={setAuth}/>;
-  if(auth.mustChangePassword)return <ForcedPasswordChange auth={auth} onChanged={setAuth} onLogout={signOut}/>;
-  return <MainApp auth={auth} onAuthChange={setAuth} onLogout={signOut} theme={theme} onToggleTheme={toggleTheme}/>;
+  if(auth.mustChangePassword)return <><NotificationCenter/><ForcedPasswordChange auth={auth} onChanged={setAuth} onLogout={signOut}/></>;
+  return <><NotificationCenter/><MainApp auth={auth} onAuthChange={setAuth} onLogout={signOut} theme={theme} onToggleTheme={toggleTheme}/></>;
 }
 
 function containerAddressSummary(c:DockerContainer){
@@ -401,18 +468,21 @@ function FirewallEngine() {
   const [message,setMessage]=useState("");
   const [source,setSource]=useState("");
   const [destination,setDestination]=useState("");
-  const [protocol,setProtocol]=useState<"all"|"tcp"|"udp"|"icmp">("all");
+  const [family,setFamily]=useState<4|6|"both">("both");
+  const [protocol,setProtocol]=useState<"all"|"tcp"|"udp"|"icmp"|"icmpv6">("all");
   const [port,setPort]=useState("");
   const [action,setAction]=useState<"ACCEPT"|"DROP"|"REJECT">("ACCEPT");
   const [description,setDescription]=useState("");
   const [publishedKey,setPublishedKey]=useState("");
+  const [publishedFamily,setPublishedFamily]=useState<4|6>(4);
   const [publishedSource,setPublishedSource]=useState("0.0.0.0/0");
   const [publishedAction,setPublishedAction]=useState<"DROP"|"REJECT"|"ACCEPT">("DROP");
   const [publishedDescription,setPublishedDescription]=useState("");
   const [hostPortKey,setHostPortKey]=useState("");
   const [hostInterface,setHostInterface]=useState("*");
+  const [hostFamily,setHostFamily]=useState<4|6|"both">(4);
   const [hostSource,setHostSource]=useState("0.0.0.0/0");
-  const [hostProtocol,setHostProtocol]=useState<"all"|"tcp"|"udp"|"icmp">("tcp");
+  const [hostProtocol,setHostProtocol]=useState<"all"|"tcp"|"udp"|"icmp"|"icmpv6">("tcp");
   const [hostPort,setHostPort]=useState("");
   const [hostAction,setHostAction]=useState<"ACCEPT"|"DROP"|"REJECT">("DROP");
   const [hostDescription,setHostDescription]=useState("");
@@ -433,6 +503,7 @@ function FirewallEngine() {
     setBusy(true);
     try{
       await createFirewallRule({
+        family,
         sourceNetworkId:source,
         destinationNetworkId:destination,
         protocol,
@@ -470,6 +541,7 @@ function FirewallEngine() {
     try{
       await createPublishedPortRule({
         ...selectedPublished,
+        family:publishedFamily,
         sourceCidr:publishedSource || "0.0.0.0/0",
         action:publishedAction,
         description:publishedDescription
@@ -485,7 +557,7 @@ function FirewallEngine() {
   }
   const selectedHostPort=(status?.hostPortRefs??[]).find(x=>`${x.protocol}|${x.listenAddress}|${x.port}`===hostPortKey);
   function chooseHostPort(key:string){setHostPortKey(key);const r=(status?.hostPortRefs??[]).find(x=>`${x.protocol}|${x.listenAddress}|${x.port}`===key);if(r){setHostProtocol(r.protocol);setHostPort(String(r.port));}}
-  async function addHostRule(){setBusy(true);try{await createHostInputRule({interfaceName:hostInterface,localAddress:selectedHostPort&&!["0.0.0.0","*","::"].includes(selectedHostPort.listenAddress)?selectedHostPort.listenAddress:null,protocol:hostProtocol,destinationPort:["tcp","udp"].includes(hostProtocol)&&hostPort?Number(hostPort):null,sourceCidr:hostSource,action:hostAction,description:hostDescription});setHostDescription("");await load();}catch(e){setMessage(e instanceof Error?e.message:String(e));}finally{setBusy(false);}}
+  async function addHostRule(){setBusy(true);try{await createHostInputRule({family:hostFamily,interfaceName:hostInterface,localAddress:selectedHostPort&&!["0.0.0.0","*","::"].includes(selectedHostPort.listenAddress)?selectedHostPort.listenAddress:null,protocol:hostProtocol,destinationPort:["tcp","udp"].includes(hostProtocol)&&hostPort?Number(hostPort):null,sourceCidr:hostSource,action:hostAction,description:hostDescription});setHostDescription("");await load();}catch(e){setMessage(e instanceof Error?e.message:String(e));}finally{setBusy(false);}}
   async function removeHostRule(id:string){setBusy(true);try{await removeHostInputRule(id);await load();}catch(e){setMessage(e instanceof Error?e.message:String(e));}finally{setBusy(false);}}
 
   return <div className="firewall-stack">
@@ -535,14 +607,15 @@ function FirewallEngine() {
       <div className="host-input-builder">
         <label><span>Detected host port</span><select value={hostPortKey} onChange={e=>chooseHostPort(e.target.value)}><option value="">Custom / select listening port</option>{(status?.hostPortRefs??[]).map((x,i)=><option key={`${x.protocol}-${x.listenAddress}-${x.port}-${i}`} value={`${x.protocol}|${x.listenAddress}|${x.port}`}>{x.listenAddress}:{x.port}/{x.protocol}</option>)}</select></label>
         <label><span>Interface</span><select value={hostInterface} onChange={e=>setHostInterface(e.target.value)}><option value="*">Any interface</option>{(status?.hostInterfaces??[]).map(x=><option key={x.name} value={x.name}>{x.name}{x.name===status?.defaultWanInterface?" · WAN":""}</option>)}</select></label>
-        <label><span>Source CIDR</span><input value={hostSource} onChange={e=>setHostSource(e.target.value)}/></label>
-        <label><span>Protocol</span><select value={hostProtocol} onChange={e=>setHostProtocol(e.target.value as any)}><option value="tcp">TCP</option><option value="udp">UDP</option><option value="icmp">ICMP</option><option value="all">ANY</option></select></label>
+        <label><span>Address family</span><select value={hostFamily} onChange={e=>{const v=e.target.value;setHostFamily(v==="both"?"both":Number(v) as 4|6);setHostSource(v==="6"?"::/0":"0.0.0.0/0");}}><option value="4">IPv4</option><option value="6">IPv6</option><option value="both">Both</option></select></label>
+        <label><span>Source CIDR</span><input value={hostSource} onChange={e=>setHostSource(e.target.value)} placeholder={hostFamily===6?"::/0":"0.0.0.0/0"}/></label>
+        <label><span>Protocol</span><select value={hostProtocol} onChange={e=>setHostProtocol(e.target.value as any)}><option value="tcp">TCP</option><option value="udp">UDP</option><option value="icmp">ICMP</option><option value="icmpv6">ICMPv6</option><option value="all">ANY</option></select></label>
         <label><span>Port</span><input disabled={!["tcp","udp"].includes(hostProtocol)} value={hostPort} onChange={e=>setHostPort(e.target.value.replace(/\D/g,""))}/></label>
         <label><span>Action</span><select value={hostAction} onChange={e=>setHostAction(e.target.value as any)}><option value="ACCEPT">ACCEPT</option><option value="DROP">DROP</option><option value="REJECT">REJECT</option></select></label>
         <label><span>Description</span><input value={hostDescription} onChange={e=>setHostDescription(e.target.value)} placeholder="Optional"/></label>
         <button className="btn add-rule" disabled={busy} onClick={addHostRule}>Add rule</button>
       </div>
-      <div className="host-input-list">{(status?.config.hostInputRules??[]).map(rule=><div className="host-input-row" key={rule.id}><div><strong>{rule.interfaceName==="*"?"ANY":rule.interfaceName}</strong><small>{rule.localAddress||"any host IP"}</small></div><code>{rule.protocol.toUpperCase()} {rule.destinationPort??"ANY"}</code><code>{rule.sourceCidr}</code><span className={rule.action==="ACCEPT"?"pill green":rule.action==="DROP"?"pill danger":"pill"}>{rule.action}</span><span className="truncate">{rule.description||"—"}</span><button className="icon-danger" onClick={()=>removeHostRule(rule.id)}><Trash2 size={15}/></button></div>)}{!status?.config.hostInputRules?.length&&<div className="muted published-empty">No host INPUT rules configured</div>}</div>
+      <div className="host-input-list">{(status?.config.hostInputRules??[]).map(rule=><div className="host-input-row" key={rule.id}><div><strong>{rule.interfaceName==="*"?"ANY":rule.interfaceName}</strong><small>{rule.localAddress||"any host IP"}</small></div><code>{rule.family===6?"IPv6":rule.family==="both"?"Dual":"IPv4"} · {rule.protocol.toUpperCase()} {rule.destinationPort??"ANY"}</code><code>{rule.sourceCidr}</code><span className={rule.action==="ACCEPT"?"pill green":rule.action==="DROP"?"pill danger":"pill"}>{rule.action}</span><span className="truncate">{rule.description||"—"}</span><button className="icon-danger" onClick={()=>removeHostRule(rule.id)}><Trash2 size={15}/></button></div>)}{!status?.config.hostInputRules?.length&&<div className="muted published-empty">No host INPUT rules configured</div>}</div>
     </div>
 
     <div className="panel">
@@ -570,8 +643,9 @@ function FirewallEngine() {
             })}
           </select>
         </label>
+        <label><span>Address family</span><select value={publishedFamily} onChange={e=>{const v=Number(e.target.value) as 4|6;setPublishedFamily(v);setPublishedSource(v===6?"::/0":"0.0.0.0/0");}}><option value="4">IPv4</option><option value="6">IPv6</option></select></label>
         <label><span>Source CIDR</span>
-          <input value={publishedSource} onChange={e=>setPublishedSource(e.target.value)} placeholder="0.0.0.0/0"/>
+          <input value={publishedSource} onChange={e=>setPublishedSource(e.target.value)} placeholder={publishedFamily===6?"::/0":"0.0.0.0/0"}/>
         </label>
         <label><span>Action</span>
           <select value={publishedAction} onChange={e=>setPublishedAction(e.target.value as any)}>
@@ -587,7 +661,7 @@ function FirewallEngine() {
       <div className="published-policy-list">
         {(status?.config.publishedPortRules ?? []).map(rule=>
           <div className="published-policy-row" key={rule.id}>
-            <div><strong>{rule.hostIp}:{rule.publishedPort}/{rule.protocol}</strong>
+            <div><strong>{rule.family===6?"IPv6":"IPv4"} · {rule.hostIp}:{rule.publishedPort}/{rule.protocol}</strong>
               <small>→ {rule.containerName}:{rule.containerPort}</small></div>
             <code>{rule.sourceCidr}</code>
             <span className={rule.action==="ACCEPT"?"pill green":rule.action==="DROP"?"pill danger":"pill"}>{rule.action}</span>
@@ -605,6 +679,7 @@ function FirewallEngine() {
       </div>
 
       <div className="rule-builder">
+        <label><span>Address family</span><select value={family} onChange={e=>setFamily(e.target.value==="both"?"both":Number(e.target.value) as 4|6)}><option value="both">IPv4 + IPv6</option><option value="4">IPv4</option><option value="6">IPv6</option></select></label>
         <label><span>Source network</span><select value={source} onChange={e=>setSource(e.target.value)}>
           <option value="">Select network</option>{networks.map(n=><option key={n.id} value={n.id}>{n.name} · {n.subnets.join(", ")}</option>)}
         </select></label>
@@ -612,7 +687,7 @@ function FirewallEngine() {
           <option value="">Select network</option>{networks.map(n=><option key={n.id} value={n.id}>{n.name} · {n.subnets.join(", ")}</option>)}
         </select></label>
         <label><span>Protocol</span><select value={protocol} onChange={e=>setProtocol(e.target.value as any)}>
-          <option value="all">ANY</option><option value="tcp">TCP</option><option value="udp">UDP</option><option value="icmp">ICMP</option>
+          <option value="all">ANY</option><option value="tcp">TCP</option><option value="udp">UDP</option><option value="icmp">ICMP</option><option value="icmpv6">ICMPv6</option>
         </select></label>
         <label><span>Destination port</span><input disabled={!["tcp","udp"].includes(protocol)} value={port}
           onChange={e=>setPort(e.target.value.replace(/\D/g,""))} placeholder={["tcp","udp"].includes(protocol)?"1-65535":"—"}/></label>
@@ -713,6 +788,10 @@ function WireGuardPage({topology}:{topology:Topology|null}){
   const [endpointHostTouched,setEndpointHostTouched]=useState(false);
   const [endpointPortTouched,setEndpointPortTouched]=useState(false);
   const [serverAllowed,setServerAllowed]=useState('10.8.0.2/32');
+  const [peerMode,setPeerMode]=useState<"remote-access"|"site-to-site">("remote-access");
+  const [remoteNetworks,setRemoteNetworks]=useState('');
+  const [editingPeerId,setEditingPeerId]=useState('');
+
   const [clientAllowed,setClientAllowed]=useState('');
   const [dns,setDns]=useState('');
   const [keepalive,setKeepalive]=useState('25');
@@ -779,9 +858,16 @@ function WireGuardPage({topology}:{topology:Topology|null}){
 
   async function createIface(){try{await createWgInterface({name,address:address.trim()||undefined,ipv6Enabled,ipv6Address:ipv6Enabled?(ipv6Address.trim()||autoWgIpv6Gateway(address)):undefined,listenPort:Number(listenPort),mtu:1420});await load()}catch(e){setError(e instanceof Error?e.message:String(e))}}
   async function addPeer(){try{
-    await createWgPeer(selected,{name:peerName,clientAddress:clientAddress.trim()||undefined,clientIpv6Address:clientIpv6Address.trim()||undefined,endpointHost:endpointHost.trim(),endpointPort:Number(endpointPort),serverAllowedIps:serverAllowed.split(',').map(x=>x.trim()).filter(Boolean),clientAllowedIps:clientAllowed.split(',').map(x=>x.trim()).filter(Boolean),dns:dns.trim()||undefined,persistentKeepalive:Number(keepalive||0)});
+    await createWgPeer(selected,{name:peerName,mode:peerMode,clientAddress:clientAddress.trim()||undefined,clientIpv6Address:clientIpv6Address.trim()||undefined,remoteNetworks:remoteNetworks.split(',').map(x=>x.trim()).filter(Boolean),endpointHost:endpointHost.trim(),endpointPort:Number(endpointPort),serverAllowedIps:serverAllowed.split(',').map(x=>x.trim()).filter(Boolean),clientAllowedIps:clientAllowed.split(',').map(x=>x.trim()).filter(Boolean),dns:dns.trim()||undefined,persistentKeepalive:Number(keepalive||0)});
     setQrSvg('');setConfig('');await load();
   }catch(e){setError(e instanceof Error?e.message:String(e))}}
+
+  function editPeer(peer:any){
+    setEditingPeerId(peer.id);setPeerName(peer.name);setPeerMode(peer.mode||'remote-access');setClientAddress(peer.clientAddress||'');setClientIpv6Address(peer.clientIpv6Address||'');setRemoteNetworks((peer.remoteNetworks||[]).join(', '));setServerAllowed((peer.serverAllowedIps||[]).join(', '));setClientAllowed((peer.clientAllowedIps||[]).join(', '));setEndpointHost(peer.endpointHost||'');setEndpointPort(peer.endpointPort?String(peer.endpointPort):'');setDns(peer.dns||'');setKeepalive(String(peer.persistentKeepalive||0));
+  }
+  function cancelEdit(){setEditingPeerId('');setPeerName('Laptop');setPeerMode('remote-access');setRemoteNetworks('');}
+  async function savePeer(){if(!editingPeerId)return;try{await updateWgPeer(selected,editingPeerId,{name:peerName,mode:peerMode,clientAddress:clientAddress.trim()||null,clientIpv6Address:clientIpv6Address.trim()||null,remoteNetworks:remoteNetworks.split(',').map(x=>x.trim()).filter(Boolean),serverAllowedIps:serverAllowed.split(',').map(x=>x.trim()).filter(Boolean),clientAllowedIps:clientAllowed.split(',').map(x=>x.trim()).filter(Boolean),endpointHost:endpointHost.trim(),endpointPort:endpointPort?Number(endpointPort):null,dns:dns.trim(),persistentKeepalive:Number(keepalive||0)});setEditingPeerId('');await load();}catch(e){setError(e instanceof Error?e.message:String(e))}}
+  async function togglePeer(peer:any){try{await setWgPeerEnabled(selected,peer.id,!peer.enabled);await load();}catch(e){setError(e instanceof Error?e.message:String(e))}}
 
   async function openConfig(peer:{id:string;name:string}){
     try{setConfig(await getWgClientConfig(selected,peer.id));setConfigName(peer.name||'wireguard-client');setQrSvg('')}
@@ -830,16 +916,18 @@ function WireGuardPage({topology}:{topology:Topology|null}){
         {iface.ipv6Address&&<label><span>IPv6 gateway</span><div className="wg-inline-save"><input value={selectedIpv6Gateway} onChange={e=>setSelectedIpv6Gateway(e.target.value)}/><button className="btn secondary" onClick={()=>toggleSelectedIpv6(true)}>Apply</button></div><small className="field-hint">Peers are assigned ::2/128, ::3/128, ... automatically.</small></label>}
       </div>
       <div className="wg-peer-builder wg-peer-builder-v2">
+        <label><span>Peer type</span><select value={peerMode} onChange={e=>setPeerMode(e.target.value as any)}><option value="remote-access">Remote Access</option><option value="site-to-site">Site-to-Site</option></select></label>
         <label><span>Name</span><input value={peerName} onChange={e=>setPeerName(e.target.value)}/></label>
         <label><span>Client address</span><input value={clientAddress} onChange={e=>setClientAddress(e.target.value)}/></label>
         {iface.ipv6Address&&<label><span>Client IPv6 address</span><input value={clientIpv6Address} onChange={e=>{setClientIpv6Address(e.target.value);const v4=serverAllowed.split(',').map(x=>x.trim()).filter(x=>x&&!x.includes(':'));setServerAllowed([...v4,e.target.value].filter(Boolean).join(', '))}} placeholder="fd42:8::2/128"/><small className="field-hint">Next address is generated automatically.</small></label>}
+        {peerMode==="site-to-site"&&<label><span>Remote networks</span><input value={remoteNetworks} onChange={e=>setRemoteNetworks(e.target.value)} placeholder="192.168.50.0/24, fd50::/64"/><small className="field-hint">DRM adds these to Server AllowedIPs, routes them via this peer and includes them in Docker access policy.</small></label>}
         <label><span>Endpoint address</span><input value={endpointHost} onChange={e=>{setEndpointHostTouched(true);setEndpointHost(e.target.value)}} placeholder="vpn.example.com"/></label>
         <label><span>Endpoint port</span><input value={endpointPort} onChange={e=>{setEndpointPortTouched(true);setEndpointPort(e.target.value.replace(/\D/g,''))}} placeholder={String(iface.listenPort)}/></label>
         <label><span>DNS</span><input value={dns} onChange={e=>setDns(e.target.value)} placeholder="1.1.1.1, 8.8.8.8"/></label>
-        <label><span>Server AllowedIPs</span><input value={serverAllowed} onChange={e=>setServerAllowed(e.target.value)} placeholder="10.8.0.2/32, fd42:8::2/128"/></label>
+        <label><span>Server AllowedIPs</span><input disabled={peerMode==="site-to-site"} value={peerMode==="site-to-site"?[clientAddress,clientIpv6Address,remoteNetworks].filter(Boolean).join(', '):serverAllowed} onChange={e=>setServerAllowed(e.target.value)} placeholder="10.8.0.2/32, fd42:8::2/128"/><small className="field-hint">{peerMode==="site-to-site"?'Generated from tunnel addresses + Remote Networks.':'Cryptokey routing / inbound source validation.'}</small></label>
         <label><span>Client routes</span><input value={clientAllowed} onChange={e=>setClientAllowed(e.target.value)} placeholder="172.20.0.0/16, fd00:20::/64, 192.168.150.0/24"/></label>
         <label><span>Keepalive</span><input value={keepalive} onChange={e=>setKeepalive(e.target.value.replace(/\D/g,''))}/></label>
-        <button className="btn primary" onClick={addPeer}>Add peer</button>
+        {editingPeerId?<><button className="btn primary" onClick={savePeer}>Save peer</button><button className="btn secondary" onClick={cancelEdit}>Cancel</button></>:<button className="btn primary" onClick={addPeer}>Add peer</button>}
       </div>
       <div className="wg-access-panel">
         <div className="wg-access-head"><div><strong>Routing & Access Policy</strong><span>Allow this WireGuard network to selected Docker/LAN networks and optionally the Internet.</span></div><label className="wg-access-toggle"><input type="checkbox" checked={accessEnabled} onChange={e=>setAccessEnabled(e.target.checked)}/> Enabled</label></div>
@@ -857,9 +945,11 @@ function WireGuardPage({topology}:{topology:Topology|null}){
           <div className="wg-peer-main">
             <div className="wg-peer-title">
               <strong>{peer.name}</strong>
-              <span className={`wg-status ${rt.status}`}>{rt.status==="active"?"ACTIVE":rt.status==="idle"?"IDLE":"NEVER"}</span>
+              <span className={`wg-peer-mode ${peer.mode==="site-to-site"?"site":"remote"}`}>{peer.mode==="site-to-site"?"SITE-TO-SITE":"REMOTE"}</span>
+              <span className={`wg-status ${peer.enabled?rt.status:"disabled"}`}>{peer.enabled?(rt.status==="active"?"ACTIVE":rt.status==="idle"?"IDLE":"NEVER"):"DISABLED"}</span>
             </div>
             <span>{[peer.clientAddress,peer.clientIpv6Address].filter(Boolean).join(' · ')||'—'} · server AllowedIPs {peer.serverAllowedIps.join(', ')}</span>
+            {peer.mode==="site-to-site"&&<small>Remote networks: {peer.remoteNetworks?.join(', ')||'—'}</small>}
             {peer.dns&&<small>DNS: {peer.dns}</small>}
             <div className="wg-runtime-grid">
               <div><small>Remote endpoint</small><code>{rt.endpoint||"—"}</code></div>
@@ -868,7 +958,7 @@ function WireGuardPage({topology}:{topology:Topology|null}){
               <div><small>Transfer</small><code>↓ {formatBytes(rt.rxBytes)} · ↑ {formatBytes(rt.txBytes)}</code></div>
             </div>
           </div>
-          <div className="wg-peer-actions"><button className="btn secondary" onClick={()=>openConfig(peer)}>Client config</button><button className="btn secondary" onClick={()=>showQr(peer)}><QrCode size={14}/> QR</button><button className="icon-danger" onClick={async()=>{await removeWgPeer(iface.name,peer.id);await load()}}><Trash2 size={15}/></button></div>
+          <div className="wg-peer-actions"><button className="btn secondary" onClick={()=>editPeer(peer)}>Edit</button><button className="btn secondary" onClick={()=>togglePeer(peer)}>{peer.enabled?'Disable':'Enable'}</button><button className="btn secondary" disabled={!peer.enabled} onClick={()=>openConfig(peer)}>Client config</button><button className="btn secondary" disabled={!peer.enabled} onClick={()=>showQr(peer)}><QrCode size={14}/> QR</button><button className="icon-danger" onClick={async()=>{await removeWgPeer(iface.name,peer.id);await load()}}><Trash2 size={15}/></button></div>
         </div>
       })}</>}</div></div>
     {config&&<div className="panel"><PanelTitle title="Generated client configuration" subtitle="Private key is sensitive; download and QR are available only to Operator/Administrator"/><pre className="wg-config">{config}</pre><div className="wg-config-actions"><button className="btn secondary" onClick={()=>navigator.clipboard.writeText(config)}>Copy config</button><button className="btn primary" onClick={downloadConfig}><Download size={14}/> Download .conf</button>{qrSvg&&<button className="btn secondary" onClick={()=>setQrSvg('')}>Hide QR</button>}</div>{qrSvg&&<div className="wg-qr"><div dangerouslySetInnerHTML={{__html:qrSvg}}/><span>Scan with the WireGuard mobile app</span></div>}</div>}
@@ -882,14 +972,18 @@ function saveTopologyPosition(id:string,position:{x:number;y:number}){const p=lo
 function TopologyView({data,firewall}:{data:Topology|null;firewall:FirewallStatus|null}) {
   const built=useMemo(()=>buildFlow(data,firewall),[data,firewall]);
   const [nodes,setNodes,onNodesChange]=useNodesState(built.nodes);
+  const [topologyUnlocked,setTopologyUnlocked]=useState(()=>localStorage.getItem("drm-topology-unlocked")==="1");
+
   useEffect(()=>{const current=new Map(nodes.map(n=>[n.id,n]));setNodes(built.nodes.map(n=>current.get(n.id)?{...n,position:current.get(n.id)!.position}:n));},[built.nodes]);
+  useEffect(()=>{localStorage.setItem("drm-topology-unlocked",topologyUnlocked?"1":"0")},[topologyUnlocked]);
+
   const edges=built.edges;
 
   return <div className="topology-shell">
     <div className="topology-toolbar">
       <div>
         <strong>Live network topology</strong>
-        <span>Docker networks, containers, published ports and firewall paths</span>
+        <span>{topologyUnlocked ? "Layout unlocked · drag nodes to arrange them" : "Layout locked · open the padlock to move nodes"} · drag empty space to move the canvas · positions are saved</span>
       </div>
       <div className="legend topology-legend">
         <span><i className="legend-network"/> Network</span>
@@ -908,16 +1002,15 @@ function TopologyView({data,firewall}:{data:Topology|null;firewall:FirewallStatu
         fitView
         minZoom={0.12}
         maxZoom={1.6}
-        nodesDraggable={true}
+        nodesDraggable={topologyUnlocked}
         nodesConnectable={false}
         elementsSelectable={true}
-        panOnDrag={[1,2]}
+        panOnDrag={true}
         selectionOnDrag={false}
         zoomOnDoubleClick={false}
       >
         <Background gap={22} size={1}/>
-        <MiniMap zoomable pannable/>
-        <Controls/>
+        <Controls onInteractiveChange={(interactive)=>setTopologyUnlocked(interactive)}/>
       </ReactFlow>
     </div>
   </div>;
@@ -939,7 +1032,6 @@ function buildFlow(data:Topology|null, firewall:FirewallStatus|null):{nodes:Node
   nodes.push({
     id:"external-internet",
     position:pos("external-internet",{x:40,y:80}),
-    draggable:false,
     selectable:true,
     data:{label:<div className="flow-node external-node">
       <div className="flow-node-icon external"><Wifi size={18}/></div>
@@ -957,7 +1049,6 @@ function buildFlow(data:Topology|null, firewall:FirewallStatus|null):{nodes:Node
     nodes.push({
       id:`net-${network.id}`,
       position:pos(`net-${network.id}`,{x:1320,y}),
-      draggable:false,
       selectable:true,
       data:{label:<div className="flow-node">
         <div className="flow-node-icon network"><Network size={18}/></div>
@@ -976,7 +1067,6 @@ function buildFlow(data:Topology|null, firewall:FirewallStatus|null):{nodes:Node
     nodes.push({
       id:`ctr-${container.id}`,
       position:pos(`ctr-${container.id}`,{x:880,y}),
-      draggable:false,
       selectable:true,
       data:{label:<div className="flow-node">
         <div className="flow-node-icon container"><Container size={17}/></div>
@@ -1026,8 +1116,7 @@ function buildFlow(data:Topology|null, firewall:FirewallStatus|null):{nodes:Node
         nodes.push({
           id:portNodeId,
           position:pos(portNodeId,{x:460,y}),
-          draggable:false,
-          selectable:true,
+              selectable:true,
           data:{label:<div className="flow-node port-node">
             <div className={isBlocked ? "flow-node-icon port blocked" : restricted ? "flow-node-icon port restricted" : "flow-node-icon port"}>
               <Plug size={17}/>

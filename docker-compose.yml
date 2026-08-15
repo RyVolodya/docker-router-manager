@@ -17,7 +17,10 @@ services:
       DRM_DATA_DIR: /data
       HOST_PROC_SYS: /host/proc/sys
       COOKIE_SECURE: "false"
-      SESSION_TTL_MS: "28800000"
+      SESSION_TTL_MS: "86400000"
+      SESSION_TOUCH_INTERVAL_MS: "300000"
+      GITHUB_REPOSITORY: "RyVolodya/docker-router-manager"
+      GITHUB_UPDATE_CACHE_MS: "900000"
 
   frontend:
     build:

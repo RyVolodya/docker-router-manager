@@ -61,7 +61,8 @@ export type FirewallRule = {
   id: string;
   sourceNetworkId: string;
   destinationNetworkId: string;
-  protocol: "all" | "tcp" | "udp" | "icmp";
+  family?:4|6|"both";
+  protocol: "all" | "tcp" | "udp" | "icmp" | "icmpv6";
   destinationPort?: number | null;
   action: "ACCEPT" | "DROP" | "REJECT";
   enabled: boolean;
@@ -69,13 +70,13 @@ export type FirewallRule = {
 };
 
 export type HostInputRule={
-  id:string;interfaceName:string;localAddress?:string|null;protocol:"all"|"tcp"|"udp"|"icmp";
+  id:string;family?:4|6|"both";interfaceName:string;localAddress?:string|null;protocol:"all"|"tcp"|"udp"|"icmp"|"icmpv6";
   destinationPort?:number|null;sourceCidr:string;action:"ACCEPT"|"DROP"|"REJECT";enabled:boolean;description?:string;
 };
 export type FirewallStatus = {
   engine:string;managedChain:string;
-  config:{enabled:boolean;rules:FirewallRule[];publishedPortRules:Array<{id:string;containerId:string;containerName:string;protocol:"tcp"|"udp";publishedPort:number;hostIp:string;containerPort:number;sourceCidr:string;action:"ACCEPT"|"DROP"|"REJECT";enabled:boolean;description?:string}>;hostInputRules:HostInputRule[];updatedAt:string};
-  applied:{enabled:boolean;rules:FirewallRule[];publishedPortRules:Array<{id:string;containerId:string;containerName:string;protocol:"tcp"|"udp";publishedPort:number;hostIp:string;containerPort:number;sourceCidr:string;action:"ACCEPT"|"DROP"|"REJECT";enabled:boolean;description?:string}>;hostInputRules:HostInputRule[];updatedAt:string};
+  config:{enabled:boolean;rules:FirewallRule[];publishedPortRules:Array<{id:string;family?:4|6;containerId:string;containerName:string;protocol:"tcp"|"udp";publishedPort:number;hostIp:string;containerPort:number;sourceCidr:string;action:"ACCEPT"|"DROP"|"REJECT";enabled:boolean;description?:string}>;hostInputRules:HostInputRule[];updatedAt:string};
+  applied:{enabled:boolean;rules:FirewallRule[];publishedPortRules:Array<{id:string;family?:4|6;containerId:string;containerName:string;protocol:"tcp"|"udp";publishedPort:number;hostIp:string;containerPort:number;sourceCidr:string;action:"ACCEPT"|"DROP"|"REJECT";enabled:boolean;description?:string}>;hostInputRules:HostInputRule[];updatedAt:string};
   pendingChanges:boolean;lastAppliedAt:string|null;
   networkRefs:Array<{id:string;name:string;subnets:string[]}>;
   publishedPortRefs:Array<{containerId:string;containerName:string;protocol:"tcp"|"udp";publishedPort:number;hostIp:string;containerPort:number}>;
@@ -129,11 +130,14 @@ export type WireGuardStatus={defaultWanInterface:string|null;defaultWanInterface
   peers:Array<{
     id:string;
     name:string;
+    mode:"remote-access"|"site-to-site";
+    enabled:boolean;
     publicKey:string;
     serverAllowedIps:string[];
     clientAllowedIps:string[];
     clientAddress?:string;
     clientIpv6Address?:string;
+    remoteNetworks:string[];
     endpoint?:string;
     endpointHost?:string;
     endpointPort?:number;

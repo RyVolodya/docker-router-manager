@@ -4,8 +4,9 @@ import { rateLimit } from "express-rate-limit";
 import { authenticate, adminResetPassword, changeOwnPassword, createUser, deleteUser, destroySession, getSession, initializeAuth, listUsers, secureCompare, updateUserRole } from "./authService.js";
 import { getContainerNetworkStats, getDockerInfo, getTopology, listContainers, listNetworks } from "./dockerService.js";
 import { addManagedRoute, deleteManagedRoute, getRoutingStatus, restoreManagedRoutes, setIpForward, setIpForward6, updateManagedRoute } from "./routingService.js";
-import { addWireGuardPeer, createWireGuardInterface, deleteWireGuardInterface, deleteWireGuardPeer, getClientConfig, getClientConfigQrSvg, getWireGuardStatus, restoreWireGuard, setWireGuardAccessPolicy, configureWireGuardIpv6 } from "./wireguardService.js";
+import { addWireGuardPeer, createWireGuardInterface, deleteWireGuardInterface, deleteWireGuardPeer, getClientConfig, getClientConfigQrSvg, getWireGuardStatus, restoreWireGuard, setWireGuardAccessPolicy, configureWireGuardIpv6, updateWireGuardPeer, setWireGuardPeerEnabled } from "./wireguardService.js";
 import { addFirewallRule, addHostInputRule, addPublishedPortRule, applyFirewall, deleteFirewallRule, deleteHostInputRule, deletePublishedPortRule, disableFirewall, getFirewallStatus, rollbackFirewall } from "./firewallService.js";
+import { getUpdateStatus } from "./updateService.js";
 
 const app = express();
 const port = Number(process.env.PORT ?? 8080);
@@ -15,7 +16,7 @@ app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(express.json({ limit: "64kb" }));
 
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", service: "docker-router-manager", version: "0.9.3" });
+  res.json({ status: "ok", service: "docker-router-manager", version: "0.9.9" });
 });
 
 
@@ -33,7 +34,7 @@ function parseCookies(header: string | undefined) {
 }
 
 function setSessionCookie(res: express.Response, sessionId: string) {
-  const maxAge = Math.floor(Number(process.env.SESSION_TTL_MS ?? 8 * 60 * 60 * 1000) / 1000);
+  const maxAge = Math.floor(Number(process.env.SESSION_TTL_MS ?? 24 * 60 * 60 * 1000) / 1000);
   const secure = cookieSecure ? "; Secure" : "";
   res.setHeader("Set-Cookie", `${sessionCookieName}=${encodeURIComponent(sessionId)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure}`);
 }
@@ -68,6 +69,10 @@ app.use("/api", async (req, res, next) => {
   if (!auth) return res.status(401).json({ error: "unauthorized", message: "Authentication required" });
   (req as any).auth = auth;
 
+  // Keep the HttpOnly cookie aligned with the rolling server-side session.
+  // The session ID itself is not rotated here; only Max-Age is refreshed.
+  setSessionCookie(res, auth.session.id);
+
   if (auth.user.mustChangePassword && !["/auth/me","/auth/change-password","/auth/logout"].includes(req.path)) {
     return res.status(428).json({ error: "password_change_required", message: "Password change required before using DRM" });
   }
@@ -84,6 +89,14 @@ app.use("/api", async (req, res, next) => {
 app.get("/api/auth/me", (req, res) => {
   const auth = (req as any).auth;
   res.json({ user: auth.publicUser, csrfToken: auth.session.csrfToken });
+});
+
+app.get("/api/system/update", async (_req, res) => {
+  try {
+    res.json(await getUpdateStatus());
+  } catch (error) {
+    res.status(502).json({ error: "update_check_failed", message: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 app.post("/api/auth/logout", async (req, res) => {
@@ -308,6 +321,8 @@ app.get('/api/wireguard/status', async (_req,res)=>{try{res.json(await getWireGu
 app.post('/api/wireguard/interfaces', async (req,res)=>{try{res.status(201).json(await createWireGuardInterface(req.body))}catch(e){res.status(400).json({message:e instanceof Error?e.message:String(e)})}});
 app.delete('/api/wireguard/interfaces/:name', async (req,res)=>{try{await deleteWireGuardInterface(paramString(req.params.name));res.status(204).end()}catch(e){res.status(404).json({message:e instanceof Error?e.message:String(e)})}});
 app.post('/api/wireguard/interfaces/:name/peers', async (req,res)=>{try{res.status(201).json(await addWireGuardPeer(paramString(req.params.name),req.body))}catch(e){res.status(400).json({message:e instanceof Error?e.message:String(e)})}});
+app.put('/api/wireguard/interfaces/:name/peers/:id', async (req,res)=>{try{res.json(await updateWireGuardPeer(paramString(req.params.name),paramString(req.params.id),req.body))}catch(e){res.status(400).json({message:e instanceof Error?e.message:String(e)})}});
+app.post('/api/wireguard/interfaces/:name/peers/:id/enabled', async (req,res)=>{try{res.json(await setWireGuardPeerEnabled(paramString(req.params.name),paramString(req.params.id),Boolean(req.body.enabled)))}catch(e){res.status(400).json({message:e instanceof Error?e.message:String(e)})}});
 app.put('/api/wireguard/interfaces/:name/access', async (req,res)=>{try{res.json(await setWireGuardAccessPolicy(paramString(req.params.name),req.body))}catch(e){res.status(400).json({message:e instanceof Error?e.message:String(e)})}});
 app.put('/api/wireguard/interfaces/:name/ipv6', async (req,res)=>{try{res.json(await configureWireGuardIpv6(paramString(req.params.name),req.body))}catch(e){res.status(400).json({message:e instanceof Error?e.message:String(e)})}});
 app.delete('/api/wireguard/interfaces/:name/peers/:id', async (req,res)=>{try{await deleteWireGuardPeer(paramString(req.params.name),paramString(req.params.id));res.status(204).end()}catch(e){res.status(404).json({message:e instanceof Error?e.message:String(e)})}});

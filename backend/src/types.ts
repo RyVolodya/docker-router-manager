@@ -68,10 +68,12 @@ export interface DockerContainerInspect {
 
 
 export type FirewallAction = "ACCEPT" | "DROP" | "REJECT";
-export type FirewallProtocol = "all" | "tcp" | "udp" | "icmp";
+export type FirewallProtocol = "all" | "tcp" | "udp" | "icmp" | "icmpv6";
+export type FirewallFamily = 4 | 6 | "both";
 
 export interface FirewallRule {
   id: string;
+  family?: FirewallFamily;
   sourceNetworkId: string;
   destinationNetworkId: string;
   protocol: FirewallProtocol;
@@ -98,6 +100,7 @@ export interface FirewallNetworkRef {
 
 export interface PublishedPortFirewallRule {
   id: string;
+  family?: 4 | 6;
   containerId: string;
   containerName: string;
   protocol: "tcp" | "udp";
@@ -122,9 +125,10 @@ export interface PublishedPortRef {
 
 export interface HostInputFirewallRule {
   id: string;
+  family?: FirewallFamily;
   interfaceName: string;
   localAddress?: string | null;
-  protocol: "all" | "tcp" | "udp" | "icmp";
+  protocol: FirewallProtocol;
   destinationPort?: number | null;
   sourceCidr: string;
   action: FirewallAction;

@@ -19,7 +19,13 @@ const backupPath = `${dataDir}/firewall.backup.json`;
 const appliedPath = `${dataDir}/firewall.applied.json`;
 const chain = "DRM-FIREWALL";
 const inputChain = "DRM-INPUT";
+const chain6 = "DRM6-FIREWALL";
+const inputChain6 = "DRM6-INPUT";
 const commentPrefix = "DRM:";
+
+async function ip6tables(args: string[]) {
+  return execFileAsync("ip6tables", ["-w", "5", ...args], { maxBuffer: 1024 * 1024 });
+}
 
 async function iptables(args: string[]) {
   return execFileAsync("iptables", ["-w", "5", ...args], {
@@ -69,6 +75,25 @@ async function terminatePublishedPortConnections(config: FirewallConfig) {
   }
 }
 
+
+function familyOfCidr(cidr: string): 4 | 6 {
+  return cidr.includes(":") ? 6 : 4;
+}
+function normalizeFamily(value: any, fallback: 4 | 6 | "both" = 4): 4 | 6 | "both" {
+  return value === 6 || value === "6" ? 6 : value === "both" ? "both" : value === 4 || value === "4" ? 4 : fallback;
+}
+function validCidr(cidr: string, family: 4 | 6) {
+  if (!cidr || !cidr.includes("/")) return false;
+  return family === 6 ? cidr.includes(":") : cidr.includes(".");
+}
+async function chainExists6(name:string) { try { await ip6tables(["-n","-L",name]); return true; } catch { return false; } }
+async function ensureChain6(name:string, parent:string) {
+  if (!(await chainExists6(name))) await ip6tables(["-N",name]);
+  try { await ip6tables(["-C",parent,"-j",name]); } catch { await ip6tables(["-I",parent,"1","-j",name]); }
+}
+async function removeJump6(name:string,parent:string) {
+  while(true){ try{await ip6tables(["-D",parent,"-j",name]);}catch{break;} }
+}
 async function chainExists() {
   try {
     await iptables(["-n", "-L", chain]);
@@ -197,7 +222,7 @@ function validateRule(rule: Omit<FirewallRule, "id"> | FirewallRule) {
   if (rule.sourceNetworkId === rule.destinationNetworkId) {
     throw new Error("Source and destination networks must be different");
   }
-  if (!["all", "tcp", "udp", "icmp"].includes(rule.protocol)) {
+  if (!["all", "tcp", "udp", "icmp", "icmpv6"].includes(rule.protocol)) {
     throw new Error("Unsupported protocol");
   }
   if (!["ACCEPT", "DROP", "REJECT"].includes(rule.action)) {
@@ -214,6 +239,7 @@ function validateRule(rule: Omit<FirewallRule, "id"> | FirewallRule) {
 }
 
 export async function addFirewallRule(input: {
+  family?: 4 | 6 | "both";
   sourceNetworkId: string;
   destinationNetworkId: string;
   protocol: FirewallProtocol;
@@ -226,6 +252,7 @@ export async function addFirewallRule(input: {
   const config = await getFirewallConfig();
   const rule: FirewallRule = {
     id: randomUUID(),
+    family: normalizeFamily(input.family, 4),
     sourceNetworkId: input.sourceNetworkId,
     destinationNetworkId: input.destinationNetworkId,
     protocol: input.protocol,
@@ -260,12 +287,12 @@ function validatePublishedPortRule(rule: Omit<PublishedPortFirewallRule, "id"> |
     throw new Error("Container port must be 1..65535");
   }
   if (!["ACCEPT", "DROP", "REJECT"].includes(rule.action)) throw new Error("Unsupported action");
-  if (!rule.sourceCidr || !/^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/.test(rule.sourceCidr)) {
-    throw new Error("Source CIDR must be IPv4 CIDR, for example 0.0.0.0/0");
-  }
+  const family = normalizeFamily(rule.family, familyOfCidr(rule.sourceCidr));
+  if (family === "both" || !validCidr(rule.sourceCidr, family)) throw new Error("Source CIDR does not match address family");
 }
 
 export async function addPublishedPortRule(input: {
+  family?: 4 | 6;
   containerId: string;
   containerName: string;
   protocol: "tcp" | "udp";
@@ -279,6 +306,7 @@ export async function addPublishedPortRule(input: {
 }) {
   const rule: PublishedPortFirewallRule = {
     id: randomUUID(),
+    family: normalizeFamily(input.family, (input.hostIp||"").includes(":") ? 6 : 4) as 4|6,
     containerId: input.containerId,
     containerName: input.containerName,
     protocol: input.protocol,
@@ -324,9 +352,10 @@ export async function deletePublishedPortRule(id: string) {
 
 function validateHostInputRule(rule: Omit<HostInputFirewallRule, "id"> | HostInputFirewallRule) {
   if (!rule.interfaceName) throw new Error("Interface is required");
-  if (!["all","tcp","udp","icmp"].includes(rule.protocol)) throw new Error("Unsupported protocol");
+  if (!["all","tcp","udp","icmp","icmpv6"].includes(rule.protocol)) throw new Error("Unsupported protocol");
   if (!["ACCEPT","DROP","REJECT"].includes(rule.action)) throw new Error("Unsupported action");
-  if (!rule.sourceCidr || !/^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/.test(rule.sourceCidr)) throw new Error("Source CIDR must be IPv4 CIDR");
+  const family=normalizeFamily(rule.family, familyOfCidr(rule.sourceCidr));
+  if(family!=="both" && !validCidr(rule.sourceCidr,family)) throw new Error("Source CIDR does not match address family");
   if (rule.destinationPort != null) {
     if (!["tcp","udp"].includes(rule.protocol)) throw new Error("Destination port requires TCP or UDP");
     if (!Number.isInteger(rule.destinationPort) || rule.destinationPort < 1 || rule.destinationPort > 65535) throw new Error("Destination port must be 1..65535");
@@ -334,11 +363,11 @@ function validateHostInputRule(rule: Omit<HostInputFirewallRule, "id"> | HostInp
 }
 
 export async function addHostInputRule(input: {
-  interfaceName?: string; localAddress?: string|null; protocol:"all"|"tcp"|"udp"|"icmp";
+  family?:4|6|"both"; interfaceName?: string; localAddress?: string|null; protocol:FirewallProtocol;
   destinationPort?: number|null; sourceCidr?: string; action:FirewallAction; enabled?:boolean; description?:string;
 }) {
   const rule:HostInputFirewallRule={
-    id:randomUUID(), interfaceName:input.interfaceName||"*", localAddress:input.localAddress||null,
+    id:randomUUID(), family:normalizeFamily(input.family,4), interfaceName:input.interfaceName||"*", localAddress:input.localAddress||null,
     protocol:input.protocol, destinationPort:input.destinationPort??null, sourceCidr:input.sourceCidr||"0.0.0.0/0",
     action:input.action, enabled:input.enabled??true, description:input.description?.trim()??""
   };
@@ -355,23 +384,33 @@ export async function deleteHostInputRule(id:string) {
   config.updatedAt=new Date().toISOString(); await saveConfig(config);
 }
 
-async function buildInputRuleCommands(config:FirewallConfig) {
-  const commands:string[][]=[[
-    "-A",inputChain,"-m","conntrack","--ctstate","ESTABLISHED,RELATED",
-    "-m","comment","--comment",`${commentPrefix}input-state`,"-j","ACCEPT"
-  ]];
-  for(const rule of (config.hostInputRules??[]).filter(r=>r.enabled)){
+async function buildInputRuleCommands(config:FirewallConfig, family:4) {
+  const commands:string[][]=[["-A",inputChain,"-m","conntrack","--ctstate","ESTABLISHED,RELATED","-m","comment","--comment",`${commentPrefix}input-state`,"-j","ACCEPT"]];
+  for(const rule of (config.hostInputRules??[]).filter(r=>r.enabled && [4,"both"].includes(normalizeFamily(r.family,4) as any))){
     validateHostInputRule(rule);
     const args=["-A",inputChain,"-s",rule.sourceCidr];
     if(rule.interfaceName!=="*") args.push("-i",rule.interfaceName);
-    if(rule.localAddress) args.push("-d",rule.localAddress);
-    if(rule.protocol!=="all") args.push("-p",rule.protocol);
+    if(rule.localAddress && rule.localAddress.includes(".")) args.push("-d",rule.localAddress);
+    if(rule.protocol!=="all") args.push("-p",rule.protocol==="icmpv6"?"icmp":rule.protocol);
     if(rule.destinationPort!=null) args.push("--dport",String(rule.destinationPort));
-    args.push("-m","comment","--comment",`${commentPrefix}input:${rule.id}`,"-j",rule.action);
-    commands.push(args);
+    args.push("-m","comment","--comment",`${commentPrefix}input:${rule.id}`,"-j",rule.action); commands.push(args);
   }
-  commands.push(["-A",inputChain,"-m","comment","--comment",`${commentPrefix}input-return`,"-j","RETURN"]);
-  return commands;
+  commands.push(["-A",inputChain,"-m","comment","--comment",`${commentPrefix}input-return`,"-j","RETURN"]); return commands;
+}
+async function buildInputRuleCommands6(config:FirewallConfig) {
+  const commands:string[][]=[["-A",inputChain6,"-m","conntrack","--ctstate","ESTABLISHED,RELATED","-m","comment","--comment","DRM6:input-state","-j","ACCEPT"]];
+  // Essential ICMPv6 control traffic: ND, RA/RS and Packet Too Big must not be accidentally broken.
+  for(const type of ["1","2","3","4","133","134","135","136"]) commands.push(["-A",inputChain6,"-p","ipv6-icmp","--icmpv6-type",type,"-m","comment","--comment","DRM6:essential-icmpv6","-j","ACCEPT"]);
+  for(const rule of (config.hostInputRules??[]).filter(r=>r.enabled && [6,"both"].includes(normalizeFamily(r.family,4) as any))){
+    const source=normalizeFamily(rule.family,4)==="both" ? "::/0" : rule.sourceCidr;
+    const args=["-A",inputChain6,"-s",source];
+    if(rule.interfaceName!=="*") args.push("-i",rule.interfaceName);
+    if(rule.localAddress && rule.localAddress.includes(":")) args.push("-d",rule.localAddress);
+    if(rule.protocol!=="all") args.push("-p",rule.protocol==="icmpv6"||rule.protocol==="icmp"?"ipv6-icmp":rule.protocol);
+    if(rule.destinationPort!=null) args.push("--dport",String(rule.destinationPort));
+    args.push("-m","comment","--comment",`DRM6:input:${rule.id}`,"-j",rule.action); commands.push(args);
+  }
+  commands.push(["-A",inputChain6,"-m","comment","--comment","DRM6:input-return","-j","RETURN"]); return commands;
 }
 
 async function getHostNetworkRefs() {
@@ -380,7 +419,7 @@ async function getHostNetworkRefs() {
   try{
     const {stdout}=await execFileAsync("ip",["-j","address","show"],{maxBuffer:1024*1024});
     interfaces=(JSON.parse(stdout) as any[]).filter(x=>x.ifname&&x.ifname!=="lo").map(x=>({
-      name:String(x.ifname), addresses:(x.addr_info??[]).filter((a:any)=>a.family==="inet").map((a:any)=>`${a.local}/${a.prefixlen}`)
+      name:String(x.ifname), addresses:(x.addr_info??[]).filter((a:any)=>a.family==="inet"||a.family==="inet6").map((a:any)=>`${a.local}/${a.prefixlen}`)
     })).sort((a,b)=>a.name.localeCompare(b.name));
   }catch{}
   try{
@@ -404,106 +443,50 @@ async function getHostNetworkRefs() {
   return {interfaces,defaultWanInterface,hostPorts};
 }
 
-function cidrV4(subnets: Array<{ subnet: string | null }>) {
-  return subnets
-    .map((s) => s.subnet)
-    .filter((x): x is string => Boolean(x && x.includes(".")));
+function cidrs(subnets: Array<{ subnet: string | null }>, family:4|6) {
+  return subnets.map(s=>s.subnet).filter((x):x is string=>Boolean(x && (family===6 ? x.includes(":") : x.includes("."))));
 }
 
-async function buildRuleCommands(config: FirewallConfig) {
-  const networks = await listNetworks();
-  const byId = new Map(networks.map((n) => [n.id, n]));
-  const commands: string[][] = [];
-
-  // Always allow replies to connections initiated by an allowed direction.
-  commands.push([
-    "-A", chain,
-    "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED",
-    "-m", "comment", "--comment", `${commentPrefix}state`,
-    "-j", "ACCEPT"
-  ]);
-
-  // Published host-port policy. DOCKER-USER sees packets after Docker DNAT,
-  // so match the ORIGINAL destination port/address from conntrack.
-  for (const rule of (config.publishedPortRules ?? []).filter((r) => r.enabled)) {
+async function buildRuleCommands(config: FirewallConfig, family:4|6) {
+  const networks=await listNetworks(); const byId=new Map(networks.map(n=>[n.id,n]));
+  const targetChain=family===6?chain6:chain; const prefix=family===6?"DRM6:":commentPrefix;
+  const commands:string[][]=[["-A",targetChain,"-m","conntrack","--ctstate","ESTABLISHED,RELATED","-m","comment","--comment",`${prefix}state`,"-j","ACCEPT"]];
+  for(const rule of (config.publishedPortRules??[]).filter(r=>r.enabled && normalizeFamily(r.family,(r.hostIp||"").includes(":")?6:4)===family)){
     validatePublishedPortRule(rule);
-    const args = [
-      "-A", chain,
-      "-s", rule.sourceCidr,
-      "-p", rule.protocol,
-      "-m", "conntrack",
-      "--ctstate", "NEW",
-      "--ctorigdstport", String(rule.publishedPort)
-    ];
-
-    // For mappings bound to a concrete IPv4 host address, also match it.
-    // 0.0.0.0 means all IPv4 host addresses, so no ctorigdst constraint is added.
-    if (rule.hostIp && rule.hostIp !== "0.0.0.0" && rule.hostIp.includes(".")) {
-      args.push("--ctorigdst", rule.hostIp);
-    }
-
-    args.push(
-      "-m", "comment", "--comment", `${commentPrefix}published:${rule.id}`,
-      "-j", rule.action
-    );
-    commands.push(args);
+    const args=["-A",targetChain,"-s",rule.sourceCidr,"-p",rule.protocol,"-m","conntrack","--ctstate","NEW","--ctorigdstport",String(rule.publishedPort)];
+    if(rule.hostIp && !["0.0.0.0","::"].includes(rule.hostIp) && (family===6?rule.hostIp.includes(":"):rule.hostIp.includes("."))) args.push("--ctorigdst",rule.hostIp);
+    args.push("-m","comment","--comment",`${prefix}published:${rule.id}`,"-j",rule.action); commands.push(args);
   }
-
-  for (const rule of config.rules.filter((r) => r.enabled)) {
-    validateRule(rule);
-    const src = byId.get(rule.sourceNetworkId);
-    const dst = byId.get(rule.destinationNetworkId);
-    if (!src || !dst) {
-      throw new Error(`Network for rule ${rule.id} no longer exists`);
-    }
-
-    const srcCidrs = cidrV4(src.subnets);
-    const dstCidrs = cidrV4(dst.subnets);
-    if (!srcCidrs.length || !dstCidrs.length) {
-      throw new Error(`Rule ${rule.id} requires IPv4 bridge subnets`);
-    }
-
-    for (const source of srcCidrs) {
-      for (const destination of dstCidrs) {
-        const args = ["-A", chain, "-s", source, "-d", destination];
-
-        if (rule.protocol !== "all") {
-          args.push("-p", rule.protocol);
-        }
-        if (rule.destinationPort != null) {
-          args.push("--dport", String(rule.destinationPort));
-        }
-        if (rule.action === "ACCEPT") {
-          args.push("-m", "conntrack", "--ctstate", "NEW");
-        }
-
-        args.push(
-          "-m", "comment", "--comment", `${commentPrefix}${rule.id}`,
-          "-j", rule.action
-        );
-        commands.push(args);
-      }
+  for(const rule of config.rules.filter(r=>r.enabled && [family,"both"].includes(normalizeFamily(r.family,4) as any))){
+    validateRule(rule); const src=byId.get(rule.sourceNetworkId),dst=byId.get(rule.destinationNetworkId);
+    if(!src||!dst) throw new Error(`Network for rule ${rule.id} no longer exists`);
+    const srcs=cidrs(src.subnets,family),dsts=cidrs(dst.subnets,family);
+    // A "both" rule applies to whichever families both networks actually provide.
+    if(!srcs.length||!dsts.length) continue;
+    for(const source of srcs) for(const destination of dsts){
+      const args=["-A",targetChain,"-s",source,"-d",destination];
+      if(rule.protocol!=="all") args.push("-p",family===6 && (rule.protocol==="icmp"||rule.protocol==="icmpv6")?"ipv6-icmp":rule.protocol==="icmpv6"?"icmp":rule.protocol);
+      if(rule.destinationPort!=null) args.push("--dport",String(rule.destinationPort));
+      if(rule.action==="ACCEPT") args.push("-m","conntrack","--ctstate","NEW");
+      args.push("-m","comment","--comment",`${prefix}${rule.id}`,"-j",rule.action); commands.push(args);
     }
   }
-
-  // Return control to Docker if no DRM policy matches.
-  commands.push([
-    "-A", chain,
-    "-m", "comment", "--comment", `${commentPrefix}return`,
-    "-j", "RETURN"
-  ]);
-
-  return commands;
+  commands.push(["-A",targetChain,"-m","comment","--comment",`${prefix}return`,"-j","RETURN"]); return commands;
 }
 
 async function render(config: FirewallConfig) {
   await ensureChain(); await ensureInputChain();
-  await iptables(["-F", chain]); await iptables(["-F", inputChain]);
-  if (!config.enabled) { await removeJump(); await removeInputJump(); return; }
-  try { await iptables(["-C","DOCKER-USER","-j",chain]); } catch { await iptables(["-I","DOCKER-USER","1","-j",chain]); }
-  try { await iptables(["-C","INPUT","-j",inputChain]); } catch { await iptables(["-I","INPUT","1","-j",inputChain]); }
-  for (const args of await buildRuleCommands(config)) await iptables(args);
-  for (const args of await buildInputRuleCommands(config)) await iptables(args);
+  await ensureChain6(chain6,"DOCKER-USER"); await ensureChain6(inputChain6,"INPUT");
+  await iptables(["-F",chain]); await iptables(["-F",inputChain]); await ip6tables(["-F",chain6]); await ip6tables(["-F",inputChain6]);
+  if(!config.enabled){await removeJump();await removeInputJump();await removeJump6(chain6,"DOCKER-USER");await removeJump6(inputChain6,"INPUT");return;}
+  try{await iptables(["-C","DOCKER-USER","-j",chain]);}catch{await iptables(["-I","DOCKER-USER","1","-j",chain]);}
+  try{await iptables(["-C","INPUT","-j",inputChain]);}catch{await iptables(["-I","INPUT","1","-j",inputChain]);}
+  try{await ip6tables(["-C","DOCKER-USER","-j",chain6]);}catch{await ip6tables(["-I","DOCKER-USER","1","-j",chain6]);}
+  try{await ip6tables(["-C","INPUT","-j",inputChain6]);}catch{await ip6tables(["-I","INPUT","1","-j",inputChain6]);}
+  for(const args of await buildRuleCommands(config,4)) await iptables(args);
+  for(const args of await buildInputRuleCommands(config,4)) await iptables(args);
+  for(const args of await buildRuleCommands(config,6)) await ip6tables(args);
+  for(const args of await buildInputRuleCommands6(config)) await ip6tables(args);
 }
 
 export async function applyFirewall() {
@@ -603,6 +586,7 @@ export async function getFirewallStatus() {
   let inputChainPresent = false;
   let inputJumpPresent = false;
   let error: string | null = null;
+  let installedRules6:string[]=[]; let installedInputRules6:string[]=[]; let chainPresent6=false; let jumpPresent6=false; let inputChainPresent6=false; let inputJumpPresent6=false;
 
   try {
     chainPresent = await chainExists();
@@ -626,6 +610,11 @@ export async function getFirewallStatus() {
     }
     try{await iptables(["-C","INPUT","-j",inputChain]);inputJumpPresent=true;}catch{inputJumpPresent=false;}
 
+    chainPresent6=await chainExists6(chain6); inputChainPresent6=await chainExists6(inputChain6);
+    if(chainPresent6){const {stdout}=await ip6tables(["-S",chain6]);installedRules6=stdout.split("\n").map(x=>x.trim()).filter(Boolean);}
+    if(inputChainPresent6){const {stdout}=await ip6tables(["-S",inputChain6]);installedInputRules6=stdout.split("\n").map(x=>x.trim()).filter(Boolean);}
+    try{await ip6tables(["-C","DOCKER-USER","-j",chain6]);jumpPresent6=true;}catch{}
+    try{await ip6tables(["-C","INPUT","-j",inputChain6]);inputJumpPresent6=true;}catch{}
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }
@@ -666,8 +655,8 @@ export async function getFirewallStatus() {
   const hostRefs=await getHostNetworkRefs();
 
   return {
-    engine: "iptables",
-    managedChain: chain,
+    engine: "iptables + ip6tables",
+    managedChain: `${chain} / ${chain6}`,
     config,
     applied,
     pendingChanges,
@@ -684,6 +673,7 @@ export async function getFirewallStatus() {
       inputChainPresent,
       inputJumpPresent,
       installedInputRules,
+      chainPresent6,jumpPresent6,installedRules6,inputChainPresent6,inputJumpPresent6,installedInputRules6,
       error
     }
   };
