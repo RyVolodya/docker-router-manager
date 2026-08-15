@@ -1,5 +1,5 @@
 ::: {align="center"}
-`<img src="docs/images/drm-logo.png" alt="Docker Router Manager logo" width="120">`{=html}
+<img src="docs/images/drm-logo.png" alt="Docker Router Manager logo" width="120">
 
 # Docker Router Manager
 
@@ -75,35 +75,35 @@ Docker networks, LANs, VPN clients and external networks**.
 Get an immediate overview of Docker networks, containers, endpoints,
 published ports and traffic.
 
-`<img src="docs/images/dashboard.png" alt="Docker Router Manager dashboard">`{=html}
+<img src="docs/images/dashboard.png" alt="Docker Router Manager dashboard">
 
 ### Interactive Network Topology
 
 See Docker networks, containers, published ports and external paths in
 one live diagram.
 
-`<img src="docs/images/topology.png" alt="Docker Router Manager topology">`{=html}
+<img src="docs/images/topology.png" alt="Docker Router Manager topology">
 
 ### Docker-aware Firewall
 
 Control access to published Docker services and policies between Docker
 networks.
 
-`<img src="docs/images/firewall.png" alt="Docker Router Manager firewall">`{=html}
+<img src="docs/images/firewall.png" alt="Docker Router Manager firewall">
 
 ### IPv4 / IPv6 Routing
 
 Inspect the Linux routing table, forwarding state and DRM-managed static
 routes.
 
-`<img src="docs/images/routing.png" alt="Docker Router Manager routing">`{=html}
+<img src="docs/images/routing.png" alt="Docker Router Manager routing">
 
 ### WireGuard
 
 Create interfaces and peers, define access policies and generate client
 configurations or QR codes.
 
-`<img src="docs/images/wireguard.png" alt="Docker Router Manager WireGuard">`{=html}
+<img src="docs/images/wireguard.png" alt="Docker Router Manager WireGuard">
 
 ------------------------------------------------------------------------
 
