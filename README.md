@@ -1,4 +1,4 @@
-<div align="center">
+<div align="center"></div>div>
 <img src="docs/images/drm-logo.png" alt="Docker Router Manager logo" width="120">
 
 # Docker Router Manager
